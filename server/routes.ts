@@ -10,6 +10,10 @@ import { pdfService } from "./services/pdf-service";
 import puppeteer from "puppeteer";
 import { exec as execCallback } from 'child_process';
 import { promisify } from 'util';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const execAsync = promisify(execCallback);
 
