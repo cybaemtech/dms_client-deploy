@@ -2142,15 +2142,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // --- SYSTEM UPDATE & DEPLOYMENT MANAGEMENT (ADMIN) ---
   function getRootDir(): string {
-    const current = process.cwd();
-    if (fs.existsSync(path.join(current, 'package.json'))) {
-      return current;
+    const candidates = [
+      process.cwd(),
+      path.resolve(process.cwd(), '..'),
+      path.resolve(__dirname, '..'),
+      'e:\\dms\\dms',
+      'c:\\inetpub\\wwwroot\\dms'
+    ];
+    for (const dir of candidates) {
+      try {
+        if (fs.existsSync(path.join(dir, '.git'))) {
+          return dir;
+        }
+      } catch (e) {}
     }
-    const parent = path.resolve(__dirname, '..');
-    if (fs.existsSync(path.join(parent, 'package.json'))) {
-      return parent;
+    for (const dir of candidates) {
+      try {
+        if (fs.existsSync(path.join(dir, 'package.json'))) {
+          return dir;
+        }
+      } catch (e) {}
     }
-    return current;
+    return process.cwd();
   }
 
   function parseGitLogOutput(output: string) {

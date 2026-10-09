@@ -1202,7 +1202,17 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
         rebuildOnly: options?.rebuildOnly || false,
         restart: true
       });
-      return response.json();
+      const text = await response.text();
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        if (text.trim().startsWith("<")) {
+          throw new Error(
+            "The backend server returned an HTML page instead of JSON. The Node.js server process on port 5001 needs to be restarted once to load the new update routes."
+          );
+        }
+        throw new Error(text || "Failed to parse update response");
+      }
     },
     onSuccess: (data) => {
       setLastUpdateResponse(data);

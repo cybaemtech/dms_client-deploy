@@ -38,7 +38,17 @@ export const getQueryFn: <T>(options: {
     }
 
     await throwIfResNotOk(res);
-    return await res.json();
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (parseErr) {
+      if (text.trim().startsWith("<")) {
+        throw new Error(
+          `API endpoint not found or server returned HTML instead of JSON. Please ensure the backend Node.js process is running and restarted.`
+        );
+      }
+      throw parseErr;
+    }
   };
 
 export const queryClient = new QueryClient({
