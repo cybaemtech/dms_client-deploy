@@ -89,6 +89,8 @@ async function seed() {
     { id: "AD-001", username: "approver@cybaem.com", password: "123", role: "approver", fullName: "John Approver", masterCopyAccess: false, departmentId: "ops-qa" },
     { id: "IA-001", username: "issuer@cybaem.com", password: "123", role: "issuer", fullName: "Jane Issuer", masterCopyAccess: true, departmentId: null },
     { id: "AM-001", username: "admin@cybaem.com", password: "123", role: "admin", fullName: "Admin User", masterCopyAccess: true, departmentId: null },
+    { id: "AD-002", username: "production@neelikon.com", password: "123", role: "approver", fullName: "Mr. Hemant Khariwale", masterCopyAccess: false, departmentId: "prod-1" },
+    { id: "CA-002", username: "nitinpatil@neelikon.com", password: "123", role: "creator", fullName: "Mr. Nitin Patil", masterCopyAccess: false, departmentId: "plant-cd" },
   ];
 
   console.log("\nInserting users...");

@@ -410,7 +410,12 @@ export class SqlServerStorage implements IStorage {
     const pool = await getPool();
     const result = await pool.request()
       .input('userId', sql.NVarChar, userId)
-      .query('SELECT * FROM documents WHERE prepared_by = @userId ORDER BY created_at DESC');
+      .query(`SELECT * FROM documents 
+              WHERE prepared_by = @userId 
+                 OR prepared_by IN (SELECT username FROM users WHERE id = @userId)
+                 OR prepared_by IN (SELECT full_name FROM users WHERE id = @userId)
+                 OR preparer_name IN (SELECT full_name FROM users WHERE id = @userId)
+              ORDER BY created_at DESC`);
     return result.recordset.map(mapDocument);
   }
 
@@ -479,6 +484,7 @@ export class SqlServerStorage implements IStorage {
                    OR d.prepared_by IN (
                      SELECT id FROM users WHERE department_id = @departmentId
                    )
+                   OR d.creator_data LIKE '%"departmentId":"' + @departmentId + '"%'
                  )`;
 
     if (status) {

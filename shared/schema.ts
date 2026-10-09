@@ -78,9 +78,9 @@ export interface Document {
   previousVersionId: string | null;
   pdfFilePath: string | null;
   wordFilePath: string | null;
-  creatorData: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null } | null;
-  approverData: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null } | null;
-  issuerData: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null } | null;
+  creatorData: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null; departmentCode?: string | null } | null;
+  approverData: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null; departmentCode?: string | null } | null;
+  issuerData: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null; departmentCode?: string | null } | null;
   issueNo: string | null;
   originalDateOfIssue: Date | null;
   preparerName: string | null;
@@ -115,9 +115,9 @@ export interface InsertDocument {
   previousVersionId?: string | null;
   pdfFilePath?: string | null;
   wordFilePath?: string | null;
-  creatorData?: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null } | null;
-  approverData?: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null } | null;
-  issuerData?: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null } | null;
+  creatorData?: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null; departmentCode?: string | null } | null;
+  approverData?: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null; departmentCode?: string | null } | null;
+  issuerData?: { id: string; username: string; fullName: string; role: string; departmentId: string | null; departmentName: string | null; departmentCode?: string | null } | null;
   issueNo?: string | null;
   originalDateOfIssue?: Date | string | null;
   preparerName?: string | null;

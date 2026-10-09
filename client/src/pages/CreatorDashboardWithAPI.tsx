@@ -4,7 +4,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import StatCard from "@/components/StatCard";
 import DocumentTable, { Document } from "@/components/DocumentTable";
 import PDFViewer from "@/components/PDFViewer";
-import ActivityFeed from "@/components/ActivityFeed";
+import ActivityFeed, { buildActivitiesFromDocs } from "@/components/ActivityFeed";
 import DocumentViewDialog from "@/components/DocumentViewDialog";
 import DocumentEditDialog from "@/components/DocumentEditDialog";
 import { WordDocumentViewer } from "@/components/WordDocumentViewer";
@@ -238,6 +238,7 @@ export default function CreatorDashboardWithAPI({
   });
 
   const pendingDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "pending");
+  const approvedDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "approved");
   const declinedDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "declined");
   const issuedDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "issued");
   const obsoleteDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "obsolete");
@@ -245,29 +246,79 @@ export default function CreatorDashboardWithAPI({
   // Revised documents: docs that have a previousVersionId (auto-calculated from document info)
   const revisedDocs = myDocuments.filter(doc => doc.previousVersionId);
 
+  // Helper to check if a document was created by user's department
+  const isCreatedByMyDept = (doc: ApiDocument) => {
+    if (!doc) return false;
+    const matchesDeptId = departmentId && doc.creatorDepartmentId && String(doc.creatorDepartmentId) === String(departmentId);
+    const matchesDeptCode = departmentCode && doc.creatorDepartmentCode && String(doc.creatorDepartmentCode).toLowerCase() === String(departmentCode).toLowerCase();
+    const matchesDeptName = departmentName && doc.creatorDepartmentName && String(doc.creatorDepartmentName).toLowerCase() === String(departmentName).toLowerCase();
+    return Boolean(matchesDeptId || matchesDeptCode || matchesDeptName);
+  };
+
+  // Helper to check if user's department is in doc.departments
+  const isDeptInDocDepartments = (doc: ApiDocument) => {
+    if (!doc || !doc.departments || !Array.isArray(doc.departments) || doc.departments.length === 0) return false;
+    return doc.departments.some(d => {
+      const idMatch = departmentId && d.id && String(d.id) === String(departmentId);
+      const codeMatch = departmentCode && d.code && String(d.code).toLowerCase() === String(departmentCode).toLowerCase();
+      const nameMatch = departmentName && d.name && String(d.name).toLowerCase() === String(departmentName).toLowerCase();
+      return Boolean(idMatch || codeMatch || nameMatch);
+    });
+  };
+
+  // Check if document is specifically for my department (only 1 department and it's my department)
+  const isSpecificToMyDept = (doc: ApiDocument) => {
+    if (!doc || !doc.departments || !Array.isArray(doc.departments)) return false;
+    if (doc.departments.length === 1) {
+      return isDeptInDocDepartments(doc);
+    }
+    return false;
+  };
+
+  // Check if document is visible to my department (own dept OR shared with my dept)
+  const isVisibleToMyDept = (doc: ApiDocument) => {
+    if (!departmentId && !departmentCode) return true; // System admin / no dept
+    return isCreatedByMyDept(doc) || isDeptInDocDepartments(doc);
+  };
+
+  // My Department documents:
+  // 1. Created by my department
+  // 2. OR shared specifically only with my department
+  const isMyDeptDoc = (doc: ApiDocument) => {
+    if (!doc) return false;
+    if (!departmentId && !departmentCode) return true;
+    if (isCreatedByMyDept(doc)) return true;
+    if (isSpecificToMyDept(doc)) return true;
+    return false;
+  };
+
+  // Other Department documents:
+  // Must NOT be my department doc, but MUST be shared with my department
+  // (e.g. multiple departments and my department is also there, or created by other dept and shared with us)
+  const isOtherDeptDoc = (doc: ApiDocument) => {
+    if (!doc) return false;
+    if (!departmentId && !departmentCode) return false;
+    if (isMyDeptDoc(doc)) return false;
+    return isDeptInDocDepartments(doc);
+  };
+
   // Combined data for Issued Documents tabs to ensure consistent filtering and no overlap
   const allRelevantIssuedDocs = useMemo(() => {
     const combined = [...allIssuedDocuments, ...myDeptIssuedDocuments];
     const unique = new Map<string, ApiDocument>();
     combined.forEach(doc => {
-      if (doc && doc.id) unique.set(doc.id, doc);
+      if (doc && doc.id && isVisibleToMyDept(doc)) {
+        unique.set(doc.id, doc);
+      }
     });
     return Array.from(unique.values());
-  }, [allIssuedDocuments, myDeptIssuedDocuments]);
+  }, [allIssuedDocuments, myDeptIssuedDocuments, departmentId, departmentCode, departmentName]);
 
-  // Helper to check if a document belongs to user's department
-  const isMyDeptDoc = (doc: ApiDocument) => {
-    if (!doc) return false;
-    const matchesDeptId = departmentId && doc.creatorDepartmentId && String(doc.creatorDepartmentId) === String(departmentId);
-    const matchesDeptCode = departmentCode && doc.creatorDepartmentCode && String(doc.creatorDepartmentCode) === String(departmentCode);
-    return Boolean(matchesDeptId || matchesDeptCode);
-  };
-
-  // My Department documents: Only documents prepared by our department
+  // My Department documents: Only documents prepared by our department or specific to it
   const myDeptDocuments = allRelevantIssuedDocs.filter(isMyDeptDoc);
 
-  // Other Department documents: Documents prepared by other departments
-  const otherDeptDocs = allRelevantIssuedDocs.filter(doc => !isMyDeptDoc(doc));
+  // Other Department documents: Documents prepared by other departments and shared with us
+  const otherDeptDocs = allRelevantIssuedDocs.filter(isOtherDeptDoc);
 
   const unreadNotifications = notifications.filter(n => !n.isRead).length;
 
@@ -344,20 +395,17 @@ export default function CreatorDashboardWithAPI({
       });
   };
 
-  const activities: Activity[] = [...myDocuments]
-    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
-    .slice(0, 8)
-    .map(doc => ({
-      id: doc.id,
-      type: doc.status === "pending" ? "pending" :
-        doc.status === "approved" ? "approved" :
-          doc.status === "declined" ? "declined" :
-            doc.status === "issued" ? "issued" : "created",
-      docName: doc.docName,
-      userName: doc.preparerName || "Unknown",
-      timestamp: doc.createdAt || new Date().toISOString(),
-      remarks: doc.approvalRemarks || doc.declineRemarks
-    }));
+  const allDocsForActivity = useMemo(() => {
+    const map = new Map<string, ApiDocument>();
+    (myDocuments || []).forEach(d => d?.id && map.set(d.id, d));
+    (myDeptIssuedDocuments || []).forEach(d => d?.id && !map.has(d.id) && map.set(d.id, d));
+    (allIssuedDocuments || []).forEach(d => d?.id && !map.has(d.id) && map.set(d.id, d));
+    return Array.from(map.values()).filter(isVisibleToMyDept);
+  }, [myDocuments, myDeptIssuedDocuments, allIssuedDocuments, departmentId, departmentCode, departmentName]);
+
+  const activities = useMemo(() => {
+    return buildActivitiesFromDocs(allDocsForActivity, isMyDeptDoc);
+  }, [allDocsForActivity, isMyDeptDoc]);
 
   const handleView = (doc: Document) => {
     setViewDoc(doc);
@@ -464,7 +512,7 @@ export default function CreatorDashboardWithAPI({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+        <div className="grid grid-cols-2 lg:grid-cols-6 gap-2.5">
           <StatCard
             title="Total"
             value={myDocuments.length}
@@ -482,6 +530,12 @@ export default function CreatorDashboardWithAPI({
             value={pendingDocs.length}
             icon={Clock}
             variant="amber"
+          />
+          <StatCard
+            title="Approved"
+            value={approvedDocs.length}
+            icon={CheckCircle}
+            variant="green"
           />
           <StatCard
             title="Reject"
@@ -526,17 +580,20 @@ export default function CreatorDashboardWithAPI({
             </div>
 
             <Tabs defaultValue="my-department" className="w-full">
-              <TabsList className="h-8 p-0.5 bg-slate-100">
+              <TabsList className="h-8 p-0.5 bg-slate-100 flex-wrap">
                 <TabsTrigger value="my-department" className="text-[11px] h-7 px-2">
                   My Department Document ({myDeptDocuments.length})
                 </TabsTrigger>
                 <TabsTrigger value="other-department" className="text-[11px] h-7 px-2">
                   Other Department Document ({otherDeptDocs.length})
                 </TabsTrigger>
-                <TabsTrigger value="pending" className="text-[11px] h-7 px-2">
+                <TabsTrigger value="pending" className="text-[11px] h-7 px-2 font-bold text-amber-700">
                   Pending ({pendingDocs.length})
                 </TabsTrigger>
-                <TabsTrigger value="declined" className="text-[11px] h-7 px-2">
+                <TabsTrigger value="approved" className="text-[11px] h-7 px-2 font-bold text-green-700">
+                  Approved ({approvedDocs.length})
+                </TabsTrigger>
+                <TabsTrigger value="declined" className="text-[11px] h-7 px-2 text-red-600">
                   Decline ({declinedDocs.length})
                 </TabsTrigger>
               </TabsList>
@@ -599,6 +656,32 @@ export default function CreatorDashboardWithAPI({
                     onDownload={handleDownload}
                     canEdit={true}
                     canDelete={true}
+                    showLocation={true}
+                    showReviewDue={false}
+                  />
+                )}
+              </TabsContent>
+
+              <TabsContent value="approved" className="mt-2">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-semibold text-green-700">
+                    Approved Documents (Awaiting Final Issue by MR)
+                  </h4>
+                  <span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded border border-green-200">
+                    {approvedDocs.length} Approved
+                  </span>
+                </div>
+                {approvedDocs.length === 0 ? (
+                  <div className="border rounded-lg p-12 text-center bg-slate-50/50">
+                    <CheckCircle className="w-12 h-12 mx-auto text-muted-foreground mb-4 opacity-20" />
+                    <p className="text-sm text-muted-foreground">No approved documents awaiting issue</p>
+                  </div>
+                ) : (
+                  <DocumentTable
+                    documents={transformedDocs(approvedDocs, 'updatedAt')}
+                    onView={handleView}
+                    onViewWord={handleViewWord}
+                    onDownload={handleDownload}
                     showLocation={true}
                     showReviewDue={false}
                   />

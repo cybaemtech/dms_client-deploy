@@ -25,7 +25,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { apiRequest } from "@/lib/queryClient";
 import ReviewReminders from "@/components/ReviewReminders";
-import ActivityFeed from "@/components/ActivityFeed";
+import ActivityFeed, { buildActivitiesFromDocs } from "@/components/ActivityFeed";
 
 interface IssuerDashboardProps {
   onLogout?: () => void;
@@ -110,12 +110,9 @@ export default function IssuerDashboard({ onLogout, userId = "issuer-1", issuerN
   const queryClient = useQueryClient();
 
   const { data: approvedDocuments = [], isLoading } = useQuery<ApiDocument[]>({
-    queryKey: ["/api/documents", "approved", departmentId],
+    queryKey: ["/api/documents", "approved"],
     queryFn: async () => {
-      const url = departmentId
-        ? `/api/documents/department/${departmentId}?status=approved`
-        : "/api/documents?status=approved";
-      const response = await fetch(url);
+      const response = await fetch("/api/documents?status=approved");
       if (!response.ok) throw new Error("Failed to fetch approved documents");
       return response.json();
     },
@@ -146,27 +143,78 @@ export default function IssuerDashboard({ onLogout, userId = "issuer-1", issuerN
     refetchInterval: 10000,
   });
 
+  // Helper to check if a document was created by user's department
+  const isCreatedByMyDept = (doc: ApiDocument) => {
+    if (!doc) return false;
+    const matchesDeptId = departmentId && doc.creatorDepartmentId && String(doc.creatorDepartmentId) === String(departmentId);
+    const matchesDeptCode = departmentCode && doc.creatorDepartmentCode && String(doc.creatorDepartmentCode).toLowerCase() === String(departmentCode).toLowerCase();
+    const matchesDeptName = departmentName && doc.creatorDepartmentName && String(doc.creatorDepartmentName).toLowerCase() === String(departmentName).toLowerCase();
+    return Boolean(matchesDeptId || matchesDeptCode || matchesDeptName);
+  };
+
+  // Helper to check if user's department is in doc.departments
+  const isDeptInDocDepartments = (doc: ApiDocument) => {
+    if (!doc || !doc.departments || !Array.isArray(doc.departments) || doc.departments.length === 0) return false;
+    return doc.departments.some(d => {
+      const idMatch = departmentId && d.id && String(d.id) === String(departmentId);
+      const codeMatch = departmentCode && d.code && String(d.code).toLowerCase() === String(departmentCode).toLowerCase();
+      const nameMatch = departmentName && d.name && String(d.name).toLowerCase() === String(departmentName).toLowerCase();
+      return Boolean(idMatch || codeMatch || nameMatch);
+    });
+  };
+
+  // Check if document is specifically for my department (only 1 department and it's my department)
+  const isSpecificToMyDept = (doc: ApiDocument) => {
+    if (!doc || !doc.departments || !Array.isArray(doc.departments)) return false;
+    if (doc.departments.length === 1) {
+      return isDeptInDocDepartments(doc);
+    }
+    return false;
+  };
+
+  // Check if document is visible to my department (own dept OR shared with my dept)
+  const isVisibleToMyDept = (doc: ApiDocument) => {
+    if (!departmentId && !departmentCode) return true; // System admin / no dept
+    return isCreatedByMyDept(doc) || isDeptInDocDepartments(doc);
+  };
+
+  // My Department documents:
+  // 1. Created by my department
+  // 2. OR shared specifically only with my department
+  const isMyDeptDoc = (doc: ApiDocument) => {
+    if (!doc) return false;
+    if (!departmentId && !departmentCode) return true;
+    if (isCreatedByMyDept(doc)) return true;
+    if (isSpecificToMyDept(doc)) return true;
+    return false;
+  };
+
+  // Other Department documents:
+  // Must NOT be my department doc, but MUST be shared with my department
+  // (e.g. multiple departments and my department is also there, or created by other dept and shared with us)
+  const isOtherDeptDoc = (doc: ApiDocument) => {
+    if (!doc) return false;
+    if (!departmentId && !departmentCode) return false;
+    if (isMyDeptDoc(doc)) return false;
+    return isDeptInDocDepartments(doc);
+  };
+
   const allRelevantIssuedDocs = useMemo(() => {
     const combined = [...issuedDocuments, ...allIssuedDocuments];
     const unique = new Map<string, ApiDocument>();
     combined.forEach(doc => {
-      if (doc && doc.id) unique.set(doc.id, doc);
+      if (doc && doc.id && isVisibleToMyDept(doc)) {
+        unique.set(doc.id, doc);
+      }
     });
     return Array.from(unique.values());
-  }, [issuedDocuments, allIssuedDocuments]);
+  }, [issuedDocuments, allIssuedDocuments, departmentId, departmentCode, departmentName]);
 
-  const isMyDeptDoc = (doc: ApiDocument) => {
-    if (!doc) return false;
-    const matchesDeptId = departmentId && doc.creatorDepartmentId && String(doc.creatorDepartmentId) === String(departmentId);
-    const matchesDeptCode = departmentCode && doc.creatorDepartmentCode && String(doc.creatorDepartmentCode) === String(departmentCode);
-    return Boolean(matchesDeptId || matchesDeptCode);
-  };
-
-  // My department = Issued documents where creator belongs to my department
+  // My department = Issued documents where creator belongs to my department or specific to it
   const myDeptIssuedDocs = allRelevantIssuedDocs.filter(isMyDeptDoc);
 
-  // Other department docs: all issued docs created by other departments
-  const otherDeptDocs = allRelevantIssuedDocs.filter(doc => !isMyDeptDoc(doc));
+  // Other department docs: all issued docs created by other departments and shared with us
+  const otherDeptDocs = allRelevantIssuedDocs.filter(isOtherDeptDoc);
 
   const { data: notifications = [] } = useQuery<Notification[]>({
     queryKey: ["/api/notifications", userId],
@@ -227,11 +275,11 @@ export default function IssuerDashboard({ onLogout, userId = "issuer-1", issuerN
     onSuccess: () => {
       // Invalidate all related queries to ensure data consistency
       queryClient.invalidateQueries({ queryKey: ["/api/documents"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/documents", "approved", departmentId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/documents", "approved"] });
       queryClient.invalidateQueries({ queryKey: ["/api/documents", "issued", departmentId] });
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
       // Force immediate refetch of approved docs
-      queryClient.refetchQueries({ queryKey: ["/api/documents", "approved", departmentId] });
+      queryClient.refetchQueries({ queryKey: ["/api/documents", "approved"] });
       queryClient.refetchQueries({ queryKey: ["/api/documents", "issued", departmentId] });
       toast({
         title: "Document Issued",
@@ -258,11 +306,11 @@ export default function IssuerDashboard({ onLogout, userId = "issuer-1", issuerN
     onSuccess: () => {
       // Invalidate all related queries to ensure data consistency
       queryClient.invalidateQueries({ queryKey: ["/api/documents"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/documents", "approved", departmentId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/documents", "approved"] });
       queryClient.invalidateQueries({ queryKey: ["/api/documents", "issued", departmentId] });
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
       // Force immediate refetch of approved docs
-      queryClient.refetchQueries({ queryKey: ["/api/documents", "approved", departmentId] });
+      queryClient.refetchQueries({ queryKey: ["/api/documents", "approved"] });
       toast({
         title: "Document Declined",
         description: "The document has been sent back to the creator for revision.",
@@ -453,20 +501,18 @@ export default function IssuerDashboard({ onLogout, userId = "issuer-1", issuerN
 
   const unreadNotifications = notifications.filter((n) => !n.isRead).length;
 
-  const activities: { id: string; type: "created" | "approved" | "declined" | "issued" | "pending"; docName: string; userName: string; timestamp: string; remarks?: string }[] =
-    [...approvedDocuments, ...issuedDocuments]
-      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
-      .slice(0, 8).map(doc => ({
-        id: doc.id,
-        type: doc.status === "pending" ? "pending" :
-          doc.status === "approved" ? "approved" :
-            doc.status === "declined" ? "declined" :
-              doc.status === "issued" ? "issued" : "created",
-        docName: doc.docName,
-        userName: doc.preparerName || "Unknown",
-        timestamp: doc.createdAt || new Date().toISOString(),
-        remarks: doc.approvalRemarks || doc.declineRemarks || doc.issueRemarks
-      }));
+  const allDocsForActivity = useMemo(() => {
+    const map = new Map<string, ApiDocument>();
+    (approvedDocuments || []).forEach(d => d?.id && map.set(d.id, d));
+    (issuedDocuments || []).forEach(d => d?.id && !map.has(d.id) && map.set(d.id, d));
+    (allIssuedDocuments || []).forEach(d => d?.id && !map.has(d.id) && map.set(d.id, d));
+    (allAdminDocs || []).forEach(d => d?.id && !map.has(d.id) && map.set(d.id, d));
+    return Array.from(map.values()).filter(isVisibleToMyDept);
+  }, [approvedDocuments, issuedDocuments, allIssuedDocuments, allAdminDocs, departmentId, departmentCode, departmentName]);
+
+  const activities = useMemo(() => {
+    return buildActivitiesFromDocs(allDocsForActivity, isMyDeptDoc);
+  }, [allDocsForActivity, isMyDeptDoc]);
 
   const issuedToday = issuedDocuments.filter((doc) => {
     const issuedDate = doc.dateOfIssue ? new Date(doc.dateOfIssue).toDateString() : "";

@@ -8,8 +8,10 @@ import multer from "multer";
 import express, { type Request, Response } from "express";
 import { pdfService } from "./services/pdf-service";
 import puppeteer from "puppeteer";
-// The second path import is redundant but not part of the requested change.
-// import path from "path"; 
+import { exec as execCallback } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(execCallback);
 
 // In-memory PDF cache: key = docId_revisionNo, value = { pdfPath, expiresAt }
 const pdfCache = new Map<string, { pdfPath: string; expiresAt: number }>();
@@ -96,10 +98,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/documents", async (req, res) => {
     try {
-      const { status, userId, recipientId } = req.query;
+      const { status, userId, recipientId, departmentId } = req.query;
       let documents;
 
-      if (recipientId && status === "issued") {
+      if (departmentId && status) {
+        documents = await storage.getDocumentsByDepartment(departmentId as string, status as string, status === "issued");
+      } else if (recipientId && status === "issued") {
         // Accurate filtering: Recipients should only see documents shared with or owned by their department
         const user = await storage.getUser(recipientId as string);
         if (user?.departmentId) {
@@ -138,6 +142,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return {
             ...doc,
             creatorDepartmentId: (doc.creatorData && doc.creatorData.departmentId) ? doc.creatorData.departmentId : (preparer?.departmentId || null),
+            creatorDepartmentCode: (doc.creatorData && doc.creatorData.departmentCode) ? doc.creatorData.departmentCode : (preparer?.departmentCode || null),
+            creatorDepartmentName: (doc.creatorData && doc.creatorData.departmentName) ? doc.creatorData.departmentName : (preparer?.departmentName || null),
             preparerName: preparer?.fullName || "Unknown",
             approverName: approver?.fullName || null,
             issuerName: issuer?.fullName || null,
@@ -229,6 +235,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const documentsWithDetails = await Promise.all(
         documents.map(async (doc) => {
           const preparer = await storage.getUser(doc.preparedBy);
+          const approver = doc.approvedBy ? await storage.getUser(doc.approvedBy) : null;
+          const issuer = doc.issuedBy ? await storage.getUser(doc.issuedBy) : null;
           let depts = await storage.getDocumentDepartments(doc.id);
           // Fallback to creator's department if none assigned
           if (depts.length === 0 && preparer?.departmentId && preparer?.departmentName) {
@@ -237,7 +245,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return {
             ...doc,
             creatorDepartmentId: (doc.creatorData && doc.creatorData.departmentId) ? doc.creatorData.departmentId : (preparer?.departmentId || null),
+            creatorDepartmentCode: (doc.creatorData && doc.creatorData.departmentCode) ? doc.creatorData.departmentCode : (preparer?.departmentCode || null),
+            creatorDepartmentName: (doc.creatorData && doc.creatorData.departmentName) ? doc.creatorData.departmentName : (preparer?.departmentName || null),
             preparerName: preparer?.fullName || "Unknown",
+            approverName: approver?.fullName || null,
+            issuerName: issuer?.fullName || null,
             departments: depts
           };
         })
@@ -2127,7 +2139,366 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: error.message });
     }
   });
+
+  // --- SYSTEM UPDATE & DEPLOYMENT MANAGEMENT (ADMIN) ---
+  function getRootDir(): string {
+    const current = process.cwd();
+    if (fs.existsSync(path.join(current, 'package.json'))) {
+      return current;
+    }
+    const parent = path.resolve(__dirname, '..');
+    if (fs.existsSync(path.join(parent, 'package.json'))) {
+      return parent;
+    }
+    return current;
+  }
+
+  function parseGitLogOutput(output: string) {
+    if (!output || !output.trim()) return [];
+    return output
+      .trim()
+      .split('\n')
+      .filter(line => line.trim().length > 0)
+      .map(line => {
+        const parts = line.split('|');
+        return {
+          hash: parts[0]?.trim() || '',
+          author: parts[1]?.trim() || '',
+          date: parts[2]?.trim() || '',
+          message: parts.slice(3).join('|').trim() || ''
+        };
+      });
+  }
+
+  function parseGitDiffOutput(output: string) {
+    if (!output || !output.trim()) return [];
+    return output
+      .trim()
+      .split('\n')
+      .filter(line => line.trim().length > 0)
+      .map(line => {
+        const parts = line.trim().split(/\s+/);
+        const status = parts[0] || 'M';
+        const file = parts.slice(1).join(' ') || '';
+        let statusLabel = 'Modified';
+        if (status.startsWith('A')) statusLabel = 'Added';
+        else if (status.startsWith('D')) statusLabel = 'Deleted';
+        else if (status.startsWith('R')) statusLabel = 'Renamed';
+        return { status, statusLabel, file };
+      });
+  }
+
+  function getUpdateHistory(): any[] {
+    try {
+      const rootDir = getRootDir();
+      const historyFile = path.join(rootDir, 'update-history.json');
+      if (fs.existsSync(historyFile)) {
+        return JSON.parse(fs.readFileSync(historyFile, 'utf8'));
+      }
+    } catch (e) {
+      console.error('Error reading update history:', e);
+    }
+    return [];
+  }
+
+  function saveUpdateHistory(record: any) {
+    try {
+      const rootDir = getRootDir();
+      const historyFile = path.join(rootDir, 'update-history.json');
+      const history = getUpdateHistory();
+      history.unshift(record);
+      const trimmed = history.slice(0, 30);
+      fs.writeFileSync(historyFile, JSON.stringify(trimmed, null, 2), 'utf8');
+
+      const distHistory = path.join(rootDir, 'dist', 'update-history.json');
+      if (fs.existsSync(path.dirname(distHistory))) {
+        fs.writeFileSync(distHistory, JSON.stringify(trimmed, null, 2), 'utf8');
+      }
+    } catch (e) {
+      console.error('Error saving update history:', e);
+    }
+  }
+
+  function syncToIis(srcDir: string, destDir: string, logs: string[]) {
+    if (!fs.existsSync(destDir)) return;
+    logs.push(`[IIS Sync] Starting sync from ${srcDir} to ${destDir}...`);
+
+    function copyRecursive(src: string, dest: string) {
+      fs.mkdirSync(dest, { recursive: true });
+      const entries = fs.readdirSync(src, { withFileTypes: true });
+      for (const entry of entries) {
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+
+        if (entry.name === '.env' && fs.existsSync(destPath)) {
+          logs.push(`[IIS Sync] Preserved production .env configuration`);
+          continue;
+        }
+        if (['uploads', 'pdfs', 'node_modules'].includes(entry.name) && fs.existsSync(destPath)) {
+          continue;
+        }
+
+        if (entry.isDirectory()) {
+          copyRecursive(srcPath, destPath);
+        } else {
+          fs.copyFileSync(srcPath, destPath);
+        }
+      }
+    }
+
+    try {
+      copyRecursive(srcDir, destDir);
+      logs.push(`[IIS Sync] Successfully synced files to IIS directory: ${destDir}`);
+    } catch (err: any) {
+      logs.push(`[IIS Sync Warning] ${err.message}`);
+    }
+  }
+
+  let isSystemUpdating = false;
+
+  app.get("/api/admin/system/update-status", async (req, res) => {
+    try {
+      const rootDir = getRootDir();
+      let branch = "main";
+      try {
+        const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: rootDir });
+        branch = stdout.trim() || "main";
+      } catch (e) {}
+
+      let currentCommit = { hash: "unknown", author: "", date: "", message: "" };
+      try {
+        const { stdout } = await execAsync('git log -1 --pretty=format:"%h|%an|%ad|%s" --date=short', { cwd: rootDir });
+        const parsed = parseGitLogOutput(stdout);
+        if (parsed.length > 0) currentCommit = parsed[0];
+      } catch (e) {}
+
+      let fetchSuccess = true;
+      let fetchError = "";
+      try {
+        await execAsync("git fetch origin", { cwd: rootDir, timeout: 20000 });
+      } catch (e: any) {
+        fetchSuccess = false;
+        fetchError = e.message || "Failed to fetch from remote git repository";
+      }
+
+      let behindCount = 0;
+      let incomingCommits: any[] = [];
+      let changedFiles: any[] = [];
+      let remoteCommit = { hash: "", author: "", date: "", message: "" };
+
+      try {
+        const { stdout: countOut } = await execAsync(`git rev-list --count HEAD..origin/${branch}`, { cwd: rootDir });
+        behindCount = parseInt(countOut.trim(), 10) || 0;
+
+        if (behindCount > 0) {
+          const { stdout: commitsOut } = await execAsync(`git log HEAD..origin/${branch} --pretty=format:"%h|%an|%ad|%s" --date=short`, { cwd: rootDir });
+          incomingCommits = parseGitLogOutput(commitsOut);
+
+          const { stdout: diffOut } = await execAsync(`git diff --name-status HEAD origin/${branch}`, { cwd: rootDir });
+          changedFiles = parseGitDiffOutput(diffOut);
+        }
+
+        const { stdout: remoteOut } = await execAsync(`git log -1 origin/${branch} --pretty=format:"%h|%an|%ad|%s" --date=short`, { cwd: rootDir });
+        const parsedRemote = parseGitLogOutput(remoteOut);
+        if (parsedRemote.length > 0) remoteCommit = parsedRemote[0];
+      } catch (e) {}
+
+      let recentHistory: any[] = [];
+      try {
+        const { stdout: histOut } = await execAsync('git log -10 --pretty=format:"%h|%an|%ad|%s" --date=short', { cwd: rootDir });
+        recentHistory = parseGitLogOutput(histOut);
+      } catch (e) {}
+
+      const updateHistory = getUpdateHistory();
+      const iisPath = 'c:\\inetpub\\wwwroot\\dms';
+      const iisExists = fs.existsSync(iisPath);
+
+      res.json({
+        branch,
+        currentCommit,
+        remoteCommit: remoteCommit.hash ? remoteCommit : currentCommit,
+        hasUpdate: behindCount > 0,
+        behindCount,
+        incomingCommits,
+        changedFiles,
+        recentHistory,
+        updateHistory,
+        fetchSuccess,
+        fetchError,
+        isUpdating: isSystemUpdating,
+        serverInfo: {
+          nodeVersion: process.version,
+          platform: process.platform,
+          uptimeSeconds: Math.floor(process.uptime()),
+          iisTargetExists: iisExists,
+          iisPath,
+          cwd: rootDir
+        }
+      });
+    } catch (error: any) {
+      console.error("Update status error:", error);
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/admin/system/apply-update", async (req, res) => {
+    if (isSystemUpdating) {
+      return res.status(409).json({ message: "An update or build is currently already running. Please wait for it to complete." });
+    }
+
+    isSystemUpdating = true;
+    const buildLogs: string[] = [];
+    const log = (msg: string) => {
+      const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      buildLogs.push(line);
+      console.log(line);
+    };
+
+    try {
+      const { adminName = "Administrator", forceReset = false, restart = true, rebuildOnly = false } = req.body;
+      const rootDir = getRootDir();
+
+      log(`=======================================================`);
+      log(`Starting software update requested by: ${adminName}`);
+      log(`Working directory: ${rootDir}`);
+      log(`Mode: ${rebuildOnly ? 'Local Rebuild & Sync' : 'Git Pull & Full Deployment'}`);
+
+      let branch = "main";
+      try {
+        const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: rootDir });
+        branch = stdout.trim() || "main";
+      } catch (e) {}
+      log(`Active branch: ${branch}`);
+
+      let prevCommit = { hash: "unknown", author: "", date: "", message: "" };
+      try {
+        const { stdout } = await execAsync('git log -1 --pretty=format:"%h|%an|%ad|%s" --date=short', { cwd: rootDir });
+        const parsed = parseGitLogOutput(stdout);
+        if (parsed.length > 0) prevCommit = parsed[0];
+      } catch (e) {}
+
+      let updatedCommits: any[] = [];
+      let changedFiles: any[] = [];
+
+      if (!rebuildOnly) {
+        log("Step 1/5: Fetching latest code from GitHub remote repository...");
+        await execAsync("git fetch origin", { cwd: rootDir, timeout: 30000 });
+        log("✓ Successfully fetched origin");
+
+        try {
+          const { stdout: commitsOut } = await execAsync(`git log HEAD..origin/${branch} --pretty=format:"%h|%an|%ad|%s" --date=short`, { cwd: rootDir });
+          updatedCommits = parseGitLogOutput(commitsOut);
+
+          const { stdout: diffOut } = await execAsync(`git diff --name-status HEAD origin/${branch}`, { cwd: rootDir });
+          changedFiles = parseGitDiffOutput(diffOut);
+          if (updatedCommits.length > 0) {
+            log(`Found ${updatedCommits.length} incoming commit(s) and ${changedFiles.length} file(s) changed.`);
+          }
+        } catch (e) {}
+
+        log(`Step 2/5: Pulling latest changes into repository...`);
+        if (forceReset) {
+          log("Running git reset --hard to cleanly match origin/main...");
+          await execAsync(`git reset --hard origin/${branch}`, { cwd: rootDir });
+        } else {
+          try {
+            const { stdout: pullOut } = await execAsync(`git pull origin ${branch}`, { cwd: rootDir });
+            log(`✓ Git pull: ${pullOut.trim()}`);
+          } catch (pullErr: any) {
+            log(`⚠ Git pull encountered local modifications: ${pullErr.message}. Stashing and applying clean pull...`);
+            await execAsync("git stash", { cwd: rootDir });
+            const { stdout: retryPull } = await execAsync(`git pull origin ${branch}`, { cwd: rootDir });
+            log(`✓ Git pull completed after stash: ${retryPull.trim()}`);
+          }
+        }
+      } else {
+        log("Step 1 & 2 skipped (Rebuild requested without pulling remote git changes)");
+      }
+
+      let newCommit = prevCommit;
+      try {
+        const { stdout } = await execAsync('git log -1 --pretty=format:"%h|%an|%ad|%s" --date=short', { cwd: rootDir });
+        const parsed = parseGitLogOutput(stdout);
+        if (parsed.length > 0) newCommit = parsed[0];
+      } catch (e) {}
+      log(`Active commit is now: ${newCommit.hash} - "${newCommit.message}"`);
+
+      log("Step 3/5: Compiling frontend client assets (Vite production build)...");
+      const { stdout: viteOut } = await execAsync("npx vite build", { cwd: rootDir, timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
+      log("✓ Frontend build completed successfully.");
+      if (viteOut) {
+        const lines = viteOut.split('\n').filter(l => l.includes('built in') || l.includes('dist/public'));
+        lines.forEach(l => log(`  ${l.trim()}`));
+      }
+
+      log("Step 4/5: Compiling Node.js backend server and generating deployment bundle...");
+      await execAsync("npx esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist", { cwd: rootDir, timeout: 60000 });
+      log("✓ Backend bundle compiled to dist/index.js");
+
+      const prepScript = path.join(rootDir, "scripts", "prepare-deployment.js");
+      if (fs.existsSync(prepScript)) {
+        await execAsync("node scripts/prepare-deployment.js", { cwd: rootDir, timeout: 60000 });
+        log("✓ Deployment package, IIS web.config, and production dependencies prepared");
+      }
+
+      const iisPath = 'c:\\inetpub\\wwwroot\\dms';
+      const distDir = path.join(rootDir, 'dist');
+      if (fs.existsSync(iisPath) && path.resolve(rootDir).toLowerCase() !== path.resolve(iisPath).toLowerCase()) {
+        log(`Step 5/5: Syncing new build files directly to IIS folder (${iisPath})...`);
+        syncToIis(distDir, iisPath, buildLogs);
+      } else {
+        log("Step 5/5: Local dist package updated. IIS reverse proxy serves the updated application.");
+      }
+
+      log("🎉 System update and build completed successfully!");
+      log(`=======================================================`);
+
+      const updateRecord = {
+        id: `update-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        adminName,
+        previousCommit: prevCommit,
+        newCommit,
+        updatedCommits: updatedCommits.length > 0 ? updatedCommits : [newCommit],
+        changedFiles,
+        status: "success",
+        logs: buildLogs.join('\n')
+      };
+      saveUpdateHistory(updateRecord);
+
+      isSystemUpdating = false;
+
+      res.json({
+        success: true,
+        message: "Software successfully updated!",
+        previousCommit: prevCommit,
+        newCommit,
+        updatedCommits: updateRecord.updatedCommits,
+        changedFiles,
+        logs: buildLogs.join('\n'),
+        restartTriggered: restart
+      });
+
+      if (restart) {
+        setTimeout(() => {
+          log("[Supervision] Gracefully recycling server process to reload fresh backend code...");
+          process.exit(0);
+        }, 3000);
+      }
+    } catch (error: any) {
+      isSystemUpdating = false;
+      log(`❌ Update failed with error: ${error.message}`);
+      console.error("System update error:", error);
+      res.status(500).json({
+        success: false,
+        message: `Update failed: ${error.message}`,
+        logs: buildLogs.join('\n')
+      });
+    }
+  });
+
   const httpServer = createServer(app);
 
   return httpServer;
 }
+

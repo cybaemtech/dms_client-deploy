@@ -414,7 +414,16 @@ function Router() {
         </Route>
         <Route path="/approver">
           {!isAuthenticated ? <Redirect to="/" /> : (
-            <ApproverDashboard onLogout={handleLogout} userId={userId} approverName={userFullName} departmentId={userDepartmentId} departmentName={userDepartmentName} departmentCode={userDepartmentCode} masterCopyAccess={userMasterCopyAccess} />
+            <ApproverDashboard
+              onLogout={handleLogout}
+              userId={userId}
+              userName={userName}
+              approverName={userFullName}
+              departmentId={userDepartmentId}
+              departmentName={userDepartmentName}
+              departmentCode={userDepartmentCode}
+              masterCopyAccess={userMasterCopyAccess}
+            />
           )}
         </Route>
         <Route path="/issuer">
