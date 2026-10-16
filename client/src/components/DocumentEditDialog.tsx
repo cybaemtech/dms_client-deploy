@@ -22,6 +22,7 @@ import { Upload, FileText, ChevronDown, ChevronRight, Search, X, Check } from "l
 import { MultiSelect } from "@/components/ui/multi-select";
 import { useQuery } from "@tanstack/react-query";
 import { useRef } from "react";
+import { useToast } from "@/hooks/use-toast";
 
 const LOCATION_OPTIONS = [
   { label: "Unit 1", value: "Unit 1" },
@@ -87,6 +88,7 @@ export default function DocumentEditDialog({
     },
   });
 
+  const { toast } = useToast();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -271,11 +273,42 @@ export default function DocumentEditDialog({
   };
 
   const handleSubmit = async (data: DocumentFormValues) => {
-    if (duplicateError) return;
+    if (duplicateError) {
+      toast({
+        title: "Duplicate Document Number",
+        description: duplicateError,
+        variant: "destructive",
+      });
+      return;
+    }
     if (doc) {
       if (isSubmitting) return;
       setIsSubmitting(true);
       try {
+        if (data.docNumber && data.docNumber.trim().length > 0) {
+          const checkRes = await fetch('/api/documents/check-duplicate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              docNumber: data.docNumber.trim(),
+              location: data.location || undefined,
+              excludeDocId: doc.id,
+            }),
+          });
+          if (checkRes.ok) {
+            const checkData = await checkRes.json();
+            if (checkData.isDuplicate) {
+              setDuplicateError(checkData.message);
+              toast({
+                title: "Duplicate Document Number",
+                description: checkData.message,
+                variant: "destructive",
+              });
+              return;
+            }
+          }
+        }
+
         const submissionData = {
           ...data,
           file: selectedFile || undefined,

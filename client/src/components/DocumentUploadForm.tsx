@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/form";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 
 const LOCATION_OPTIONS = [
   { label: "Unit 1", value: "Unit 1" },
@@ -55,6 +56,7 @@ interface DocumentUploadFormProps {
 }
 
 export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparerName, defaultLocation, initialData, migrationMode = false }: DocumentUploadFormProps) {
+  const { toast } = useToast();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -214,6 +216,11 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
 
   const handleSubmit = async (data: DocumentFormValues) => {
     if (duplicateError) {
+      toast({
+        title: "Duplicate Document Number",
+        description: duplicateError,
+        variant: "destructive",
+      });
       return;
     }
 
@@ -226,6 +233,30 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
 
     setIsSubmitting(true);
     try {
+      // Pre-check duplicate before submitting (guarantees no race condition or bypass)
+      if (!isRevision && data.docNumber && data.docNumber.trim().length > 0) {
+        const checkRes = await fetch('/api/documents/check-duplicate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            docNumber: data.docNumber.trim(),
+            location: data.location || undefined,
+          }),
+        });
+        if (checkRes.ok) {
+          const checkData = await checkRes.json();
+          if (checkData.isDuplicate) {
+            setDuplicateError(checkData.message);
+            toast({
+              title: "Duplicate Document Number",
+              description: checkData.message,
+              variant: "destructive",
+            });
+            return;
+          }
+        }
+      }
+
       // Convert date strings for backend if needed
       await onSubmit?.({ ...data, file: selectedFile });
       console.log("Form submitted:", { ...data, file: selectedFile?.name });

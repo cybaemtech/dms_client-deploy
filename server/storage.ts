@@ -414,7 +414,7 @@ export class SqlServerStorage implements IStorage {
   async getDocumentsByDocNumber(docNumber: string, location?: string): Promise<Document[]> {
     const pool = await getPool();
     const request = pool.request().input('docNumber', sql.NVarChar, docNumber.trim());
-    const query = 'SELECT * FROM documents WHERE TRIM(LOWER(doc_number)) = TRIM(LOWER(@docNumber)) ORDER BY revision_no DESC';
+    const query = 'SELECT * FROM documents WHERE RTRIM(LTRIM(LOWER(doc_number))) = RTRIM(LTRIM(LOWER(@docNumber))) ORDER BY revision_no DESC';
     const result = await request.query(query);
     const docs = result.recordset.map(mapDocument);
 
