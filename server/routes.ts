@@ -12,6 +12,7 @@ import puppeteer from "puppeteer";
 import { exec as execCallback } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
+import AdmZip from 'adm-zip';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2222,15 +2223,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // --- SYSTEM UPDATE & DEPLOYMENT MANAGEMENT (ADMIN) ---
   function getRootDir(): string {
-    const current = process.cwd();
-    if (fs.existsSync(path.join(current, 'package.json'))) {
-      return current;
+    const candidates = [
+      'c:\\inetpub\\wwwroot\\dms',
+      process.cwd(),
+      path.resolve(process.cwd(), '..'),
+      path.resolve(__dirname, '..'),
+      path.resolve(__dirname, '../..')
+    ];
+
+    // Priority 1: Project root containing client folder and index.html
+    for (const c of candidates) {
+      if (fs.existsSync(path.join(c, 'client')) && fs.existsSync(path.join(c, 'index.html'))) {
+        return c;
+      }
     }
-    const parent = path.resolve(__dirname, '..');
-    if (fs.existsSync(path.join(parent, 'package.json'))) {
-      return parent;
+
+    // Priority 2: Directory containing .git and package.json
+    for (const c of candidates) {
+      if (fs.existsSync(path.join(c, '.git')) && fs.existsSync(path.join(c, 'package.json'))) {
+        return c;
+      }
     }
-    return current;
+
+    // Priority 3: Directory containing .git
+    for (const c of candidates) {
+      if (fs.existsSync(path.join(c, '.git'))) {
+        return c;
+      }
+    }
+
+    // Fallback: If current directory is 'dist', step up to parent
+    if (process.cwd().toLowerCase().endsWith('dist')) {
+      const parent = path.resolve(process.cwd(), '..');
+      if (fs.existsSync(path.join(parent, 'package.json'))) {
+        return parent;
+      }
+    }
+
+    return process.cwd();
   }
 
   function parseGitLogOutput(output: string) {
@@ -2437,11 +2467,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { adminName = "Administrator", forceReset = false, restart = true, rebuildOnly = false } = req.body;
       const rootDir = getRootDir();
+      const isClientServer = !fs.existsSync(path.join(rootDir, 'client', 'src'));
 
       log(`=======================================================`);
       log(`Starting software update requested by: ${adminName}`);
       log(`Working directory: ${rootDir}`);
-      log(`Mode: ${rebuildOnly ? 'Local Rebuild & Sync' : 'Git Pull & Full Deployment'}`);
+      log(`Environment: ${isClientServer ? 'Client Server (Production dist package only)' : 'Development / Build Server'}`);
+      log(`Mode: ${rebuildOnly ? 'Local Rebuild & Sync' : 'Update & Deploy'}`);
 
       let branch = "main";
       try {
@@ -2460,68 +2492,94 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let updatedCommits: any[] = [];
       let changedFiles: any[] = [];
 
-      if (!rebuildOnly) {
-        log("Step 1/4: Fetching latest code from GitHub remote repository...");
-        await execAsync("git fetch origin", { cwd: rootDir, timeout: 30000 });
-        log("✓ Successfully fetched origin");
+      if (isClientServer) {
+        // --- CLIENT SERVER (PRODUCTION DIST ONLY) ---
+        // On client server, ONLY dist files are deployed. Do NOT pull or extract all source code.
+        log("Client server detected: deploying dist production bundle only (source code will not be deployed).");
 
-        try {
-          const { stdout: commitsOut } = await execAsync(`git log HEAD..origin/${branch} --pretty=format:"%h|%an|%ad|%s" --date=short`, { cwd: rootDir });
-          updatedCommits = parseGitLogOutput(commitsOut);
-
-          const { stdout: diffOut } = await execAsync(`git diff --name-status HEAD origin/${branch}`, { cwd: rootDir });
-          changedFiles = parseGitDiffOutput(diffOut);
-          if (updatedCommits.length > 0) {
-            log(`Found ${updatedCommits.length} incoming commit(s) and ${changedFiles.length} file(s) changed.`);
-          }
-        } catch (e) {}
-
-        log(`Step 2/4: Pulling latest changes into repository...`);
-        if (forceReset) {
-          log("Running git reset --hard to cleanly match origin/main...");
-          await execAsync(`git reset --hard origin/${branch}`, { cwd: rootDir });
-        } else {
+        if (!rebuildOnly) {
+          log("Step 1/2: Fetching latest release package from repository...");
           try {
-            const { stdout: pullOut } = await execAsync(`git pull origin ${branch}`, { cwd: rootDir });
-            log(`✓ Git pull: ${pullOut.trim()}`);
-          } catch (pullErr: any) {
-            log(`⚠ Git pull encountered local modifications: ${pullErr.message}. Stashing and applying clean pull...`);
-            await execAsync("git stash", { cwd: rootDir });
-            const { stdout: retryPull } = await execAsync(`git pull origin ${branch}`, { cwd: rootDir });
-            log(`✓ Git pull completed after stash: ${retryPull.trim()}`);
+            await execAsync(`git fetch origin ${branch}`, { cwd: rootDir, timeout: 30000 });
+            log("✓ Successfully fetched origin");
+
+            try {
+              const { stdout: commitsOut } = await execAsync(`git log HEAD..origin/${branch} --pretty=format:"%h|%an|%ad|%s" --date=short`, { cwd: rootDir });
+              updatedCommits = parseGitLogOutput(commitsOut);
+            } catch (e) {}
+
+            // Checkout ONLY dist.zip so raw source code is not deployed to the client server
+            try {
+              await execAsync(`git checkout origin/${branch} -- dist.zip`, { cwd: rootDir });
+              log("✓ Checked out latest production dist.zip from repository");
+            } catch (coErr: any) {
+              log(`Note: git checkout dist.zip note: ${coErr.message}`);
+            }
+          } catch (fetchErr: any) {
+            log(`Note: Remote fetch notice: ${fetchErr.message}`);
           }
+        }
+
+        const distZip = path.join(rootDir, "dist.zip");
+        if (fs.existsSync(distZip)) {
+          log("Step 2/2: Applying production dist files from dist.zip...");
+          try {
+            const zip = new AdmZip(distZip);
+            // Preserve production .env, uploads, and pdfs
+            const envPath = path.join(rootDir, '.env');
+            const envBackup = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : null;
+
+            zip.extractAllTo(rootDir, true);
+
+            if (envBackup) {
+              fs.writeFileSync(envPath, envBackup, 'utf8');
+              log("✓ Preserved production .env settings");
+            }
+            log("✓ Production dist files successfully updated (clean dist deployment)!");
+          } catch (zipErr: any) {
+            log(`⚠ Extraction notice: ${zipErr.message}. Trying PowerShell fallback...`);
+            await execAsync(`powershell -NoProfile -Command "Expand-Archive -Path dist.zip -DestinationPath . -Force"`, { cwd: rootDir, timeout: 30000 });
+          }
+        } else {
+          log("Step 2/2: Production dist package is up-to-date.");
         }
       } else {
-        log("Step 1 & 2 skipped (Rebuild requested without pulling remote git changes)");
-      }
+        // --- DEVELOPMENT / BUILD SERVER (FULL CODEBASE) ---
+        if (!rebuildOnly) {
+          log("Step 1/4: Fetching latest code from GitHub remote repository...");
+          await execAsync("git fetch origin", { cwd: rootDir, timeout: 30000 });
+          log("✓ Successfully fetched origin");
 
-      let newCommit = prevCommit;
-      try {
-        const { stdout } = await execAsync('git log -1 --pretty=format:"%h|%an|%ad|%s" --date=short', { cwd: rootDir });
-        const parsed = parseGitLogOutput(stdout);
-        if (parsed.length > 0) newCommit = parsed[0];
-      } catch (e) {}
-      log(`Active commit is now: ${newCommit.hash} - "${newCommit.message}"`);
+          try {
+            const { stdout: commitsOut } = await execAsync(`git log HEAD..origin/${branch} --pretty=format:"%h|%an|%ad|%s" --date=short`, { cwd: rootDir });
+            updatedCommits = parseGitLogOutput(commitsOut);
 
-      // Try fast extraction of pre-built dist.zip first
-      let appliedFastZip = false;
-      const distZip = path.join(rootDir, "dist.zip");
-      if (!rebuildOnly && fs.existsSync(distZip)) {
-        log("Step 3/4: Applying pre-built production bundle from dist.zip...");
-        try {
-          if (process.platform === 'win32') {
-            await execAsync(`powershell -NoProfile -Command "Expand-Archive -Path dist.zip -DestinationPath dist -Force"`, { cwd: rootDir, timeout: 30000 });
-          } else {
-            await execAsync(`unzip -o dist.zip -d dist/`, { cwd: rootDir, timeout: 30000 });
+            const { stdout: diffOut } = await execAsync(`git diff --name-status HEAD origin/${branch}`, { cwd: rootDir });
+            changedFiles = parseGitDiffOutput(diffOut);
+            if (updatedCommits.length > 0) {
+              log(`Found ${updatedCommits.length} incoming commit(s) and ${changedFiles.length} file(s) changed.`);
+            }
+          } catch (e) {}
+
+          log(`Step 2/4: Synchronizing repository with origin/${branch}...`);
+          try {
+            await execAsync(`git reset --hard origin/${branch}`, { cwd: rootDir });
+            log(`✓ Repository cleanly synchronized to origin/${branch}`);
+          } catch (resetErr: any) {
+            log(`⚠ Git reset notice: ${resetErr.message}. Trying pull...`);
+            try {
+              await execAsync(`git pull origin ${branch} --allow-unrelated-histories -X theirs`, { cwd: rootDir });
+              log(`✓ Git pull completed`);
+            } catch (pullErr: any) {
+              await execAsync(`git fetch origin ${branch}`, { cwd: rootDir });
+              await execAsync(`git reset --hard FETCH_HEAD`, { cwd: rootDir });
+              log(`✓ Repository synchronized to FETCH_HEAD`);
+            }
           }
-          log("✓ Extracted pre-built dist package instantly (0 compile wait)!");
-          appliedFastZip = true;
-        } catch (zipErr: any) {
-          log(`⚠ Fast dist.zip extraction note: ${zipErr.message}. Falling back to standard compiler...`);
+        } else {
+          log("Step 1 & 2 skipped (Rebuild requested without pulling remote git changes)");
         }
-      }
 
-      if (!appliedFastZip || rebuildOnly) {
         log("Step 3/4: Compiling frontend client assets (Vite production build)...");
         const { stdout: viteOut } = await execAsync("npx vite build", { cwd: rootDir, timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
         log("✓ Frontend build completed successfully.");
@@ -2537,18 +2595,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const prepScript = path.join(rootDir, "scripts", "prepare-deployment.js");
         if (fs.existsSync(prepScript)) {
           await execAsync("node scripts/prepare-deployment.js", { cwd: rootDir, timeout: 60000 });
-          log("✓ Deployment package, IIS web.config, and production dependencies prepared");
+          log("✓ Deployment package, IIS web.config, production dist.zip, and dependencies prepared");
+        }
+
+        const iisPath = 'c:\\inetpub\\wwwroot\\dms';
+        const distDir = path.join(rootDir, 'dist');
+        if (fs.existsSync(iisPath) && path.resolve(rootDir).toLowerCase() !== path.resolve(iisPath).toLowerCase()) {
+          log(`Step 4/4: Syncing ONLY dist files directly to IIS folder (${iisPath})...`);
+          syncToIis(distDir, iisPath, buildLogs);
+        } else {
+          log("Step 4/4: Local dist package updated. IIS reverse proxy serves the updated application.");
         }
       }
 
-      const iisPath = 'c:\\inetpub\\wwwroot\\dms';
-      const distDir = path.join(rootDir, 'dist');
-      if (fs.existsSync(iisPath) && path.resolve(rootDir).toLowerCase() !== path.resolve(iisPath).toLowerCase()) {
-        log(`Step 4/4: Syncing new build files directly to IIS folder (${iisPath})...`);
-        syncToIis(distDir, iisPath, buildLogs);
-      } else {
-        log("Step 4/4: Local dist package updated. IIS reverse proxy serves the updated application.");
-      }
+      let newCommit = prevCommit;
+      try {
+        const { stdout } = await execAsync('git log -1 --pretty=format:"%h|%an|%ad|%s" --date=short', { cwd: rootDir });
+        const parsed = parseGitLogOutput(stdout);
+        if (parsed.length > 0) newCommit = parsed[0];
+      } catch (e) {}
+      log(`Active commit is now: ${newCommit.hash} - "${newCommit.message}"`);
 
       log("🎉 System update completed successfully!");
       log(`=======================================================`);

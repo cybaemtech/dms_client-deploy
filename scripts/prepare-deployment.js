@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import AdmZip from 'adm-zip';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -174,6 +175,17 @@ const readmeContent = `# DMS Deployment Package (IIS + SQL Server)
 `;
 fs.writeFileSync(path.join(distDir, 'README.md'), readmeContent);
 console.log('✓ Created: README.md');
+
+// 9. Generate dist.zip containing only dist package files for client server deployment
+try {
+    const zip = new AdmZip();
+    zip.addLocalFolder(distDir);
+    const zipPath = path.join(rootDir, 'dist.zip');
+    zip.writeZip(zipPath);
+    console.log('✓ Created: dist.zip (production bundle for client server updates)');
+} catch (error) {
+    console.warn('⚠ Note: Could not create dist.zip:', error.message);
+}
 
 console.log('\n✅ Deployment package ready in dist/ folder');
 console.log('\n📋 Next steps:');
