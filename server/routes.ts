@@ -2580,22 +2580,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
           log("Step 1 & 2 skipped (Rebuild requested without pulling remote git changes)");
         }
 
-        log("Step 3/4: Compiling frontend client assets (Vite production build)...");
-        const { stdout: viteOut } = await execAsync("npx vite build", { cwd: rootDir, timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
-        log("✓ Frontend build completed successfully.");
-        if (viteOut) {
-          const lines = viteOut.split('\n').filter(l => l.includes('built in') || l.includes('dist/public'));
-          lines.forEach(l => log(`  ${l.trim()}`));
+        const distZipCandidates = [
+          path.join(rootDir, "dist.zip"),
+          path.join(rootDir, "..", "dist.zip"),
+          "c:\\inetpub\\wwwroot\\dms\\dist.zip"
+        ];
+        const distZipPath = distZipCandidates.find(p => fs.existsSync(p));
+        let appliedFastZip = false;
+
+        if (distZipPath && !rebuildOnly) {
+          log("Step 3/4: Applying pre-compiled production bundle from dist.zip...");
+          try {
+            const zip = new AdmZip(distZipPath);
+            const targetDirs = Array.from(new Set([
+              path.join(rootDir, 'dist'),
+              'c:\\inetpub\\wwwroot\\dms\\dist'
+            ])).filter(d => fs.existsSync(d));
+
+            for (const t of targetDirs) {
+              zip.extractAllTo(t, true);
+            }
+            log("✓ Successfully extracted pre-compiled dist package to server folders!");
+            appliedFastZip = true;
+          } catch (zipErr: any) {
+            log(`⚠ AdmZip extraction notice: ${zipErr.message}. Using PowerShell Expand-Archive...`);
+            try {
+              await execAsync(`powershell -NoProfile -Command "Expand-Archive -Path '${distZipPath}' -DestinationPath dist -Force"`, { cwd: rootDir });
+              appliedFastZip = true;
+              log("✓ PowerShell Expand-Archive completed successfully");
+            } catch (psErr: any) {
+              log(`⚠ PowerShell extract note: ${psErr.message}`);
+            }
+          }
         }
 
-        log("Compiling Node.js backend server and generating deployment bundle...");
-        await execAsync("npx esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist", { cwd: rootDir, timeout: 60000 });
-        log("✓ Backend bundle compiled to dist/index.js");
+        if (!appliedFastZip) {
+          log("Step 3/4: Compiling frontend client assets (Vite production build)...");
+          const { stdout: viteOut } = await execAsync("npx vite build", { cwd: rootDir, timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
+          log("✓ Frontend build completed successfully.");
+          if (viteOut) {
+            const lines = viteOut.split('\n').filter(l => l.includes('built in') || l.includes('dist/public'));
+            lines.forEach(l => log(`  ${l.trim()}`));
+          }
 
-        const prepScript = path.join(rootDir, "scripts", "prepare-deployment.js");
-        if (fs.existsSync(prepScript)) {
-          await execAsync("node scripts/prepare-deployment.js", { cwd: rootDir, timeout: 60000 });
-          log("✓ Deployment package, IIS web.config, production dist.zip, and dependencies prepared");
+          log("Compiling Node.js backend server and generating deployment bundle...");
+          await execAsync("npx esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist", { cwd: rootDir, timeout: 60000 });
+          log("✓ Backend bundle compiled to dist/index.js");
+
+          const prepScript = path.join(rootDir, "scripts", "prepare-deployment.js");
+          if (fs.existsSync(prepScript)) {
+            await execAsync("node scripts/prepare-deployment.js", { cwd: rootDir, timeout: 60000 });
+            log("✓ Deployment package, IIS web.config, production dist.zip, and dependencies prepared");
+          }
         }
 
         const iisPath = 'c:\\inetpub\\wwwroot\\dms';
