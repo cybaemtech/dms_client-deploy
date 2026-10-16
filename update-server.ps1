@@ -2,32 +2,28 @@ Write-Host "====================================================" -ForegroundCol
 Write-Host "             DMS Software Auto-Update               " -ForegroundColor Cyan
 Write-Host "====================================================" -ForegroundColor Cyan
 
-if (Test-Path "client/src") {
-    Write-Host "[Build Machine Detected] Full source code present." -ForegroundColor Cyan
-    Write-Host "`n[1/3] Pulling latest code and building..." -ForegroundColor Yellow
-    git pull origin main
-    npm run build
-} else {
-    Write-Host "[Client Server Detected] Updating production dist files only..." -ForegroundColor Cyan
-    Write-Host "`n[1/3] Fetching latest dist package..." -ForegroundColor Yellow
-    git fetch origin main
-    git checkout origin/main -- dist.zip 2>$null
-    if (Test-Path "dist.zip") {
-        Write-Host "`n[2/3] Applying fresh production build from dist.zip..." -ForegroundColor Yellow
-        Expand-Archive -Path dist.zip -DestinationPath . -Force
-        Write-Host "✓ Extracted dist.zip successfully." -ForegroundColor Green
-    }
+Write-Host "`n[1/4] Stopping DMS services..." -ForegroundColor Yellow
+Stop-Service -Name "*dms*" -Force -ErrorAction SilentlyContinue
+
+Write-Host "`n[2/4] Fetching latest release package..." -ForegroundColor Yellow
+git sparse-checkout init --cone 2>$null
+git sparse-checkout set dist.zip update-server.bat update-server.ps1 2>$null
+git fetch origin main
+git reset --hard origin/main
+
+Write-Host "Cleaning development source code..." -ForegroundColor Gray
+Remove-Item -Recurse -Force client, server, shared, scripts, attached_assets, .config -ErrorAction SilentlyContinue
+Remove-Item -Force check_*.js, APPROVER_WORKFLOW_GUIDE*, .replit, *.ts -ErrorAction SilentlyContinue
+
+Write-Host "`n[3/4] Extracting production dist package..." -ForegroundColor Yellow
+if (Test-Path "dist.zip") {
+    Expand-Archive -Path dist.zip -DestinationPath dist -Force
+    Write-Host "✓ Extracted production build into dist/" -ForegroundColor Green
 }
 
-Write-Host "`n[3/3] Restarting DMS services..." -ForegroundColor Yellow
-Get-Service -Name "*dms*" -ErrorAction SilentlyContinue | ForEach-Object {
-    Write-Host "Restarting service $($_.Name)..."
-    Restart-Service -Name $_.Name -Force
-}
-
-if (Get-Command pm2 -ErrorAction SilentlyContinue) {
-    pm2 reload dms
-}
+Write-Host "`n[4/4] Starting DMS services..." -ForegroundColor Yellow
+Start-Service -Name "*dms*" -ErrorAction SilentlyContinue
+iisreset
 
 Write-Host "`n====================================================" -ForegroundColor Green
 Write-Host "        DMS has been updated successfully!          " -ForegroundColor Green
