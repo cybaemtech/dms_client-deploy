@@ -30,7 +30,7 @@ const documentSchema = z.object({
   docName: z.string().min(1, "Document title is required"),
   docNumber: z.string()
     .min(1, "Document number is required")
-    .regex(/^[A-Z0-9/]+$/, "Only uppercase letters, digits, and '/' are allowed (no spaces)"),
+    .regex(/^[A-Z0-9/&-]+$/, "Only uppercase letters, digits, '/', '&', and '-' are allowed (no spaces)"),
   dateOfIssue: z.string().min(1, "Date of issue is required"),
   revisionNumber: z.string().optional(), // Auto-calculated or manual for migration
   duePeriodYears: z.string().optional(),
@@ -88,25 +88,72 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
     },
   });
 
-  // Watch for changes in docNumber to fetch next revision
+  // Watch for changes in docNumber and location
   const watchedDocNumber = form.watch("docNumber");
+  const watchedLocation = form.watch("location");
+  const [duplicateError, setDuplicateError] = useState<string | null>(null);
+  const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
 
+  // Real-time check for duplicate document number in overlapping locations (for new documents)
   useEffect(() => {
-    const fetchNextRevision = async () => {
-      // If manual revision entry is enabled for NEW documents, don't automatically fetch or override
-      if (!isRevision && (isManualRevEnabled || migrationMode)) {
-        return;
-      }
+    if (isRevision) {
+      setDuplicateError(null);
+      return;
+    }
 
+    if (!watchedDocNumber || watchedDocNumber.trim().length < 2) {
+      setDuplicateError(null);
+      return;
+    }
+
+    const checkDuplicate = async () => {
+      setIsCheckingDuplicate(true);
+      try {
+        const response = await fetch('/api/documents/check-duplicate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            docNumber: watchedDocNumber.trim(),
+            location: watchedLocation || undefined,
+          }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.isDuplicate) {
+            setDuplicateError(data.message);
+          } else {
+            setDuplicateError(null);
+          }
+        }
+      } catch (error) {
+        console.error("Error checking duplicate document number:", error);
+      } finally {
+        setIsCheckingDuplicate(false);
+      }
+    };
+
+    const timer = setTimeout(checkDuplicate, 350); // Debounce
+    return () => clearTimeout(timer);
+  }, [watchedDocNumber, watchedLocation, isRevision]);
+
+  // Fetch next revision number when revising an existing document
+  useEffect(() => {
+    if (!isRevision) return;
+
+    const fetchNextRevision = async () => {
       if (watchedDocNumber && watchedDocNumber.length > 2) {
         try {
-          // Use POST endpoint to handle document numbers with special characters
           const response = await fetch('/api/revision-number', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ docNumber: watchedDocNumber }),
+            body: JSON.stringify({
+              docNumber: watchedDocNumber,
+              location: watchedLocation || undefined,
+            }),
           });
           if (response.ok) {
             const data = await response.json();
@@ -120,7 +167,7 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
 
     const timer = setTimeout(fetchNextRevision, 500); // Debounce
     return () => clearTimeout(timer);
-  }, [watchedDocNumber, form]);
+  }, [watchedDocNumber, watchedLocation, isRevision, form]);
 
   // Watch for changes in dateOfRevision to calculate reviewDueDate
   const watchedDateOfRevision = form.watch("dateOfRevision");
@@ -166,6 +213,10 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
   };
 
   const handleSubmit = async (data: DocumentFormValues) => {
+    if (duplicateError) {
+      return;
+    }
+
     if (!selectedFile) {
       setFileError("Word document is required for document content.");
       return;
@@ -263,20 +314,30 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
               name="docNumber"
               render={({ field }) => (
                 <FormItem className="space-y-0.5">
-                  <FormLabel className="text-xs">Document Number *</FormLabel>
+                  <div className="flex items-center justify-between">
+                    <FormLabel className="text-xs">Document Number *</FormLabel>
+                    {isCheckingDuplicate && (
+                      <span className="text-[10px] text-muted-foreground animate-pulse">Checking duplicate...</span>
+                    )}
+                  </div>
                   <FormControl>
                     <Input
                       placeholder="e.g., NFDCL/F/EHS/02"
                       {...field}
                       onChange={(e) => {
-                        const val = e.target.value.toUpperCase().replace(/[^A-Z0-9/]/g, '');
+                        const val = e.target.value.toUpperCase().replace(/[^A-Z0-9/&-]/g, '');
                         field.onChange(val);
                       }}
                       data-testid="input-doc-number"
-                      className="h-8 text-sm"
+                      className={`h-8 text-sm ${duplicateError ? 'border-red-500 focus-visible:ring-red-500 bg-red-50/30' : ''}`}
                       disabled={isRevision}
                     />
                   </FormControl>
+                  {duplicateError && (
+                    <div className="text-[11px] text-red-600 font-medium bg-red-50 border border-red-200 p-2 rounded mt-1 leading-tight shadow-sm">
+                      ⚠️ {duplicateError}
+                    </div>
+                  )}
                   <FormMessage className="text-[10px]" />
                 </FormItem>
               )}
@@ -444,8 +505,14 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
           <Button type="button" variant="outline" size="sm" onClick={onCancel} data-testid="button-cancel" disabled={isSubmitting}>
             Cancel
           </Button>
-          <Button type="submit" size="sm" data-testid="button-submit" disabled={isSubmitting}>
-            {isSubmitting ? "Submitting..." : "Submit for Approval"}
+          <Button
+            type="submit"
+            size="sm"
+            data-testid="button-submit"
+            disabled={isSubmitting || !!duplicateError || isCheckingDuplicate}
+            className={duplicateError ? "bg-destructive text-destructive-foreground hover:bg-destructive cursor-not-allowed opacity-90" : ""}
+          >
+            {isSubmitting ? "Submitting..." : isCheckingDuplicate ? "Checking Duplicate..." : duplicateError ? "Duplicate Doc Number" : "Submit for Approval"}
           </Button>
         </div>
       </form>

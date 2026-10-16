@@ -197,6 +197,21 @@ export function isProductionClusterDoc(doc: ApiDocument): boolean {
     return false;
   }
 
+  // Check if explicitly from another known department (e.g. EHS)
+  const docNum = (doc.docNumber || "").toUpperCase();
+  const creatorCode = (doc.creatorDepartmentCode || "").toUpperCase();
+  const creatorName = normalizeString(doc.creatorDepartmentName || (doc as any).creatorData?.departmentName);
+
+  if (
+    creatorCode === "EHS" ||
+    creatorName.includes("e.h.s") ||
+    creatorName.includes("ehs") ||
+    docNum.includes("/EHS/") ||
+    docNum.startsWith("EHS-")
+  ) {
+    return false;
+  }
+
   // 1. Check creator department id, code, or name
   if (isProductionClusterDepartment(doc.creatorDepartmentId, doc.creatorDepartmentName, doc.creatorDepartmentCode)) {
     return true;
@@ -236,11 +251,14 @@ export function isProductionClusterDoc(doc: ApiDocument): boolean {
     return true;
   }
 
-  // 4. Check assigned departments
-  if (doc.departments && Array.isArray(doc.departments)) {
-    if (doc.departments.some(d => isProductionClusterDepartment(d.id, d.name, d.code))) {
-      return true;
-    }
+  // 4. Check document number pattern for Production
+  if (
+    docNum.includes("/PROD/") ||
+    docNum.includes("/PLT-") ||
+    docNum.includes("/OPS-BLP/") ||
+    docNum.startsWith("PROD-")
+  ) {
+    return true;
   }
 
   return false;
@@ -577,9 +595,13 @@ export default function ApproverDashboard({
     });
   };
 
-  // Check if document is specifically for my department (only 1 department and it's my department)
+  // Check if document is specifically for my department (only assigned to my department / production cluster, not combined with outside departments)
   const isSpecificToMyDept = (doc: ApiDocument) => {
-    if (!doc || !doc.departments || !Array.isArray(doc.departments)) return false;
+    if (!doc || !doc.departments || !Array.isArray(doc.departments) || doc.departments.length === 0) return false;
+    if (isProductionApprover) {
+      // Must ONLY be assigned to production cluster departments (no outside / combine departments)
+      return doc.departments.every(d => isProductionClusterDepartment(d.id, d.name, d.code));
+    }
     if (doc.departments.length === 1) {
       return isDeptInDocDepartments(doc);
     }
@@ -596,14 +618,11 @@ export default function ApproverDashboard({
   };
 
   // My Department documents:
-  // 1. Created by my department
-  // 2. OR shared specifically only with my department
+  // 1. Created by my department (or Production cluster)
+  // 2. OR shared specifically only with my department (not combined across multiple outside departments)
   const isMyDeptDoc = (doc: ApiDocument) => {
     if (!doc) return false;
-    if (isProductionApprover) {
-      return isProductionClusterDoc(doc);
-    }
-    if (!departmentId && !departmentCode) return true;
+    if (!departmentId && !departmentCode && !isProductionApprover) return true;
     if (isCreatedByMyDept(doc)) return true;
     if (isSpecificToMyDept(doc)) return true;
     return false;
@@ -611,6 +630,7 @@ export default function ApproverDashboard({
 
   // Other Department documents:
   // Must NOT be my department doc, but MUST be shared with my department
+  // (e.g. combined/multiple departments where my department is included, or created by other dept and shared with us)
   const isOtherDeptDoc = (doc: ApiDocument) => {
     if (!doc) return false;
     if (!departmentId && !departmentCode && !isProductionApprover) return false;
@@ -656,7 +676,12 @@ export default function ApproverDashboard({
       list = list.filter(d => {
         const dName = normalizeString(d.creatorDepartmentName || (d.departments && d.departments[0]?.name) || "");
         const target = normalizeString(selectedDepartmentFilter);
-        return dName === target || dName.includes(target);
+        const matchesCreator = dName === target || dName.includes(target);
+        const matchesAssigned = (d.departments || []).some(dept => {
+          const name = normalizeString(dept.name);
+          return name === target || name.includes(target);
+        });
+        return matchesCreator || matchesAssigned;
       });
     }
 

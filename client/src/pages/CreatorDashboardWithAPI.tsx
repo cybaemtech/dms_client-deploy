@@ -113,11 +113,22 @@ export default function CreatorDashboardWithAPI({
   const queryClient = useQueryClient();
 
   const { data: myDocuments = [], isLoading: myDocsLoading } = useQuery<ApiDocument[]>({
-    queryKey: ["/api/documents", userId],
+    queryKey: ["/api/documents", "creator-all-docs", departmentId, userId],
     queryFn: async () => {
-      const response = await fetch(`/api/documents?userId=${userId}`);
-      if (!response.ok) throw new Error("Failed to fetch documents");
-      return response.json();
+      const urls = [
+        `/api/documents?userId=${userId}`,
+        ...(departmentId ? [`/api/documents/department/${departmentId}`] : [])
+      ];
+      const results = await Promise.all(
+        urls.map(url => fetch(url).then(r => r.ok ? r.json() : []).catch(() => []))
+      );
+      const map = new Map<string, ApiDocument>();
+      results.flat().forEach(doc => {
+        if (doc && doc.id) {
+          map.set(doc.id, doc);
+        }
+      });
+      return Array.from(map.values());
     },
     refetchInterval: 5000,
   });
@@ -218,11 +229,11 @@ export default function CreatorDashboardWithAPI({
     onSuccess: () => {
       // Invalidate all related queries to ensure data consistency
       queryClient.invalidateQueries({ queryKey: ["/api/documents"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/documents", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/documents", "creator-all-docs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/documents", "my-dept-issued", departmentId] });
       queryClient.invalidateQueries({ queryKey: ["/api/documents", "all-issued"] });
       // Force immediate refetch of data
-      queryClient.refetchQueries({ queryKey: ["/api/documents", userId] });
+      queryClient.refetchQueries({ queryKey: ["/api/documents", "creator-all-docs"] });
       toast({
         title: "Document Updated",
         description: "The document has been successfully updated.",
@@ -236,15 +247,6 @@ export default function CreatorDashboardWithAPI({
       });
     },
   });
-
-  const pendingDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "pending");
-  const approvedDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "approved");
-  const declinedDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "declined");
-  const issuedDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "issued");
-  const obsoleteDocs = myDocuments.filter(doc => (doc.status || "").toLowerCase() === "obsolete");
-
-  // Revised documents: docs that have a previousVersionId (auto-calculated from document info)
-  const revisedDocs = myDocuments.filter(doc => doc.previousVersionId);
 
   // Helper to check if a document was created by user's department
   const isCreatedByMyDept = (doc: ApiDocument) => {
@@ -302,6 +304,32 @@ export default function CreatorDashboardWithAPI({
     return isDeptInDocDepartments(doc);
   };
 
+  // Documents created by user's department (or this user)
+  const myDeptCreatedDocs = useMemo(() => {
+    return (myDocuments || []).filter(doc => isCreatedByMyDept(doc) || doc.preparedBy === userId);
+  }, [myDocuments, departmentId, departmentCode, departmentName, userId]);
+
+  const pendingDocs = useMemo(() => {
+    return myDeptCreatedDocs.filter(doc => (doc.status || "").toLowerCase() === "pending");
+  }, [myDeptCreatedDocs]);
+
+  const approvedDocs = useMemo(() => {
+    return myDeptCreatedDocs.filter(doc => (doc.status || "").toLowerCase() === "approved");
+  }, [myDeptCreatedDocs]);
+
+  const declinedDocs = useMemo(() => {
+    return myDeptCreatedDocs.filter(doc => (doc.status || "").toLowerCase() === "declined");
+  }, [myDeptCreatedDocs]);
+
+  const obsoleteDocs = useMemo(() => {
+    return myDeptCreatedDocs.filter(doc => (doc.status || "").toLowerCase() === "obsolete");
+  }, [myDeptCreatedDocs]);
+
+  // Revised documents: docs that have a previousVersionId (auto-calculated from document info)
+  const revisedDocs = useMemo(() => {
+    return myDeptCreatedDocs.filter(doc => doc.previousVersionId);
+  }, [myDeptCreatedDocs]);
+
   // Combined data for Issued Documents tabs to ensure consistent filtering and no overlap
   const allRelevantIssuedDocs = useMemo(() => {
     const combined = [...allIssuedDocuments, ...myDeptIssuedDocuments];
@@ -319,6 +347,13 @@ export default function CreatorDashboardWithAPI({
 
   // Other Department documents: Documents prepared by other departments and shared with us
   const otherDeptDocs = allRelevantIssuedDocs.filter(isOtherDeptDoc);
+
+  // Total issued documents accessible (My Dept + Other Dept shared with us):
+  const totalIssuedCount = allRelevantIssuedDocs.length;
+
+  // Total documents across all categories in the dashboard:
+  const myDeptTotalCount = pendingDocs.length + approvedDocs.length + declinedDocs.length + myDeptDocuments.length;
+  const totalAllDocs = myDeptTotalCount + otherDeptDocs.length;
 
   const unreadNotifications = notifications.filter(n => !n.isRead).length;
 
@@ -515,9 +550,10 @@ export default function CreatorDashboardWithAPI({
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-2.5">
           <StatCard
             title="Total"
-            value={myDocuments.length}
+            value={totalAllDocs}
             icon={FileText}
             variant="blue"
+            trend={`${myDeptTotalCount} Dept · ${otherDeptDocs.length} Other Dept`}
           />
           <StatCard
             title="Revised"
@@ -545,9 +581,10 @@ export default function CreatorDashboardWithAPI({
           />
           <StatCard
             title="Issued"
-            value={issuedDocs.length}
+            value={totalIssuedCount}
             icon={Send}
             variant="purple"
+            trend={`${myDeptDocuments.length} Dept · ${otherDeptDocs.length} Other Dept`}
           />
         </div>
 

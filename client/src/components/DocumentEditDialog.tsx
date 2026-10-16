@@ -176,6 +176,48 @@ export default function DocumentEditDialog({
     }
   }, [watchedDateOfRev, watchedDateOfIssue, form]);
 
+  const watchedDocNumber = form.watch("docNumber");
+  const watchedLocation = form.watch("location");
+  const [duplicateError, setDuplicateError] = useState<string | null>(null);
+  const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
+
+  useEffect(() => {
+    if (!open || !watchedDocNumber || watchedDocNumber.trim().length < 2) {
+      setDuplicateError(null);
+      return;
+    }
+
+    const checkDuplicate = async () => {
+      setIsCheckingDuplicate(true);
+      try {
+        const response = await fetch('/api/documents/check-duplicate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            docNumber: watchedDocNumber.trim(),
+            location: watchedLocation || undefined,
+            excludeDocId: doc?.id,
+          }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.isDuplicate) {
+            setDuplicateError(data.message);
+          } else {
+            setDuplicateError(null);
+          }
+        }
+      } catch (error) {
+        console.error("Error checking duplicate doc number:", error);
+      } finally {
+        setIsCheckingDuplicate(false);
+      }
+    };
+
+    const timer = setTimeout(checkDuplicate, 350);
+    return () => clearTimeout(timer);
+  }, [watchedDocNumber, watchedLocation, doc?.id, open]);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setSelectedFile(e.target.files[0]);
@@ -229,6 +271,7 @@ export default function DocumentEditDialog({
   };
 
   const handleSubmit = async (data: DocumentFormValues) => {
+    if (duplicateError) return;
     if (doc) {
       if (isSubmitting) return;
       setIsSubmitting(true);
@@ -277,7 +320,12 @@ export default function DocumentEditDialog({
                 name="docNumber"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Document Number *</FormLabel>
+                    <div className="flex items-center justify-between">
+                      <FormLabel>Document Number *</FormLabel>
+                      {isCheckingDuplicate && (
+                        <span className="text-[10px] text-muted-foreground animate-pulse">Checking duplicate...</span>
+                      )}
+                    </div>
                     <FormControl>
                       <Input
                         {...field}
@@ -286,8 +334,14 @@ export default function DocumentEditDialog({
                           field.onChange(val);
                         }}
                         data-testid="input-edit-doc-number"
+                        className={duplicateError ? "border-red-500 focus-visible:ring-red-500 bg-red-50/30" : ""}
                       />
                     </FormControl>
+                    {duplicateError && (
+                      <div className="text-[11px] text-red-600 font-medium bg-red-50 border border-red-200 p-2 rounded mt-1 leading-tight shadow-sm">
+                        ⚠️ {duplicateError}
+                      </div>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -571,8 +625,13 @@ export default function DocumentEditDialog({
               }} data-testid="button-cancel-edit">
                 Cancel
               </Button>
-              <Button type="submit" data-testid="button-save-edit" disabled={isSubmitting}>
-                {isSubmitting ? "Saving..." : "Save Changes"}
+              <Button
+                type="submit"
+                data-testid="button-save-edit"
+                disabled={isSubmitting || !!duplicateError || isCheckingDuplicate}
+                className={duplicateError ? "bg-destructive text-destructive-foreground hover:bg-destructive cursor-not-allowed opacity-90" : ""}
+              >
+                {isSubmitting ? "Saving..." : isCheckingDuplicate ? "Checking Duplicate..." : duplicateError ? "Duplicate Doc Number" : "Save Changes"}
               </Button>
             </DialogFooter>
           </form>

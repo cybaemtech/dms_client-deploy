@@ -3,6 +3,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { pdfService } from "./services/pdf-service";
+import { storage } from "./storage";
 
 const app = express();
 
@@ -71,6 +72,15 @@ app.use((req, res, next) => {
     }
 
     const server = await registerRoutes(app);
+    console.log('Routes registered successfully');
+
+    // Clean up any historical superseded issued documents that share docNumber and overlapping locations
+    try {
+      console.log('Checking for superseded issued documents with overlapping locations...');
+      await storage.cleanUpAllSupersededIssuedDocuments();
+    } catch (cleanupErr) {
+      console.warn('Initial cleanup of superseded documents warning:', cleanupErr);
+    }
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;

@@ -86,6 +86,9 @@ export function serveStatic(app: Express) {
     if (req.originalUrl.startsWith("/api") || req.baseUrl.startsWith("/api") || req.path.startsWith("/api")) {
       return res.status(404).json({ message: `API route not found: ${req.method} ${req.originalUrl}. Server process may need to be restarted.` });
     }
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }

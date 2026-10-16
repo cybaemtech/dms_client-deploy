@@ -28,6 +28,7 @@ import {
   type AppSetting,
   type InsertAppSetting
 } from "@shared/schema";
+import { locationsOverlap, filterLatestDocuments } from "@shared/locationUtils";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -39,12 +40,14 @@ export interface IStorage {
   getDocument(id: string): Promise<Document | undefined>;
   getDocumentsByStatus(status: string, latestOnly?: boolean): Promise<Document[]>;
   getDocumentsByUser(userId: string): Promise<Document[]>;
-  getDocumentsByDocNumber(docNumber: string): Promise<Document[]>;
-  getDocumentRevisions(docNumber: string): Promise<Document[]>;
+  getDocumentsByDocNumber(docNumber: string, location?: string): Promise<Document[]>;
+  getDocumentRevisions(docNumber: string, location?: string): Promise<Document[]>;
   getDocumentsByDepartment(departmentId: string, status?: string, latestOnly?: boolean): Promise<Document[]>;
   createDocument(document: InsertDocument): Promise<Document>;
   updateDocument(id: string, updates: Partial<Document>): Promise<Document | undefined>;
-  getGlobalNextRevisionNo(docNumber?: string): Promise<number>;
+  getGlobalNextRevisionNo(docNumber?: string, location?: string): Promise<number>;
+  obsoleteSupersededIssuedDocuments(docNumber: string, location?: string, keepDocId?: string): Promise<number>;
+  cleanUpAllSupersededIssuedDocuments(): Promise<number>;
 
   getDepartments(): Promise<Department[]>;
   createDepartment(department: InsertDepartment): Promise<Department>;
@@ -382,28 +385,17 @@ export class SqlServerStorage implements IStorage {
 
   async getDocumentsByStatus(status: string, latestOnly: boolean = false): Promise<Document[]> {
     const pool = await getPool();
-    let query = 'SELECT * FROM documents WHERE status = @status';
-
-    if (latestOnly && status === 'issued') {
-      query = `
-        SELECT d1.* FROM documents d1 
-        WHERE TRIM(LOWER(d1.status)) = TRIM(LOWER(@status))
-        AND d1.revision_no = (
-          SELECT MAX(d2.revision_no) 
-          FROM documents d2 
-          WHERE TRIM(LOWER(d2.doc_number)) = TRIM(LOWER(d1.doc_number)) 
-          AND TRIM(LOWER(ISNULL(d2.location, ''))) = TRIM(LOWER(ISNULL(d1.location, '')))
-          AND TRIM(LOWER(d2.status)) = TRIM(LOWER(@status))
-        )
-      `;
-    }
-
-    query += ' ORDER BY created_at DESC';
+    const query = 'SELECT * FROM documents WHERE status = @status ORDER BY created_at DESC';
 
     const result = await pool.request()
       .input('status', sql.NVarChar, status)
       .query(query);
-    return result.recordset.map(mapDocument);
+    const docs = result.recordset.map(mapDocument);
+
+    if (latestOnly && status === 'issued') {
+      return filterLatestDocuments(docs);
+    }
+    return docs;
   }
 
   async getDocumentsByUser(userId: string): Promise<Document[]> {
@@ -422,50 +414,102 @@ export class SqlServerStorage implements IStorage {
   async getDocumentsByDocNumber(docNumber: string, location?: string): Promise<Document[]> {
     const pool = await getPool();
     const request = pool.request().input('docNumber', sql.NVarChar, docNumber.trim());
-    let query = 'SELECT * FROM documents WHERE TRIM(LOWER(doc_number)) = TRIM(LOWER(@docNumber))';
-
-    // Always include location filter if location is provided (even if null or empty)
-    // to ensure we only get documents for that specific chain.
-    // If location is truly undefined, we skip it (global search across all locations)
-    if (location !== undefined) {
-      query += ' AND TRIM(LOWER(ISNULL(location, \'\'))) = TRIM(LOWER(@location))';
-      request.input('location', sql.NVarChar, location?.trim() || '');
-    }
-
-    query += ' ORDER BY revision_no DESC';
+    const query = 'SELECT * FROM documents WHERE TRIM(LOWER(doc_number)) = TRIM(LOWER(@docNumber)) ORDER BY revision_no DESC';
     const result = await request.query(query);
-    return result.recordset.map(mapDocument);
+    const docs = result.recordset.map(mapDocument);
+
+    // Filter by overlapping locations if location is specified
+    if (location !== undefined) {
+      return docs.filter(d => locationsOverlap(d.location, location));
+    }
+    return docs;
   }
 
   async getDocumentRevisions(docNumber: string, location?: string): Promise<Document[]> {
-    const pool = await getPool();
-    const request = pool.request().input('docNumber', sql.NVarChar, docNumber.trim());
-    let query = 'SELECT * FROM documents WHERE TRIM(LOWER(doc_number)) = TRIM(LOWER(@docNumber))';
-
-    if (location !== undefined) {
-      query += ' AND TRIM(LOWER(ISNULL(location, \'\'))) = TRIM(LOWER(@location))';
-      request.input('location', sql.NVarChar, location?.trim() || '');
-    }
-
-    query += ' ORDER BY revision_no ASC';
-    const result = await request.query(query);
-    return result.recordset.map(mapDocument);
+    const docs = await this.getDocumentsByDocNumber(docNumber, location);
+    return docs.sort((a, b) => (Number(a.revisionNo) || 0) - (Number(b.revisionNo) || 0));
   }
 
   async getGlobalNextRevisionNo(docNumber?: string, location?: string): Promise<number> {
     if (!docNumber || docNumber.trim() === "") return 0;
 
-    const pool = await getPool();
-    const request = pool.request().input('docNumber', sql.NVarChar, docNumber.trim());
-    let query = 'SELECT ISNULL(MAX(revision_no), -1) + 1 as nextRev FROM documents WHERE TRIM(LOWER(doc_number)) = TRIM(LOWER(@docNumber))';
+    const docs = await this.getDocumentsByDocNumber(docNumber, location);
+    if (docs.length === 0) return 0;
 
-    if (location !== undefined) {
-      query += ' AND TRIM(LOWER(ISNULL(location, \'\'))) = TRIM(LOWER(@location))';
-      request.input('location', sql.NVarChar, location?.trim() || '');
+    const maxRev = Math.max(...docs.map(d => Number(d.revisionNo) || 0));
+    return maxRev >= 0 ? maxRev + 1 : 0;
+  }
+
+  async obsoleteSupersededIssuedDocuments(docNumber: string, location?: string, keepDocId?: string): Promise<number> {
+    const docs = await this.getDocumentsByDocNumber(docNumber, location);
+    const issuedDocs = docs.filter(d => (d.status || '').toLowerCase().trim() === 'issued');
+    if (issuedDocs.length <= 1) return 0;
+
+    // The active document to keep is keepDocId if provided, or the one with the highest revisionNo
+    let activeDoc: Document | undefined;
+    if (keepDocId) {
+      activeDoc = issuedDocs.find(d => d.id === keepDocId);
+    }
+    if (!activeDoc) {
+      activeDoc = [...issuedDocs].sort((a, b) => (Number(b.revisionNo) || 0) - (Number(a.revisionNo) || 0))[0];
     }
 
-    const result = await request.query(query);
-    return result.recordset[0]?.nextRev ?? 0;
+    let obsoletedCount = 0;
+    for (const doc of issuedDocs) {
+      if (doc.id !== activeDoc.id && (Number(doc.revisionNo) || 0) < (Number(activeDoc.revisionNo) || 0)) {
+        console.log(`[Storage] Auto-marking superseded version ${doc.revisionNo} (${doc.id}) of ${docNumber} at ${doc.location || 'All'} as obsolete`);
+        await this.updateDocument(doc.id, { status: 'obsolete' });
+        obsoletedCount++;
+      }
+    }
+    return obsoletedCount;
+  }
+
+  async cleanUpAllSupersededIssuedDocuments(): Promise<number> {
+    try {
+      const pool = await getPool();
+      const result = await pool.request().query("SELECT * FROM documents WHERE status = 'issued'");
+      const issuedDocs = result.recordset.map(mapDocument);
+
+      const groups = new Map<string, Document[]>();
+      for (const doc of issuedDocs) {
+        const num = (doc.docNumber || '').trim().toLowerCase();
+        if (!num) continue;
+        if (!groups.has(num)) groups.set(num, []);
+        groups.get(num)!.push(doc);
+      }
+
+      let obsoletedCount = 0;
+      for (const docs of Array.from(groups.values())) {
+        if (docs.length <= 1) continue;
+        const sorted = [...docs].sort((a, b) => {
+          const revA = Number(a.revisionNo) || 0;
+          const revB = Number(b.revisionNo) || 0;
+          if (revB !== revA) return revB - revA;
+          return (new Date(b.createdAt || 0).getTime()) - (new Date(a.createdAt || 0).getTime());
+        });
+
+        for (let i = 1; i < sorted.length; i++) {
+          const lowerDoc = sorted[i];
+          const hasHigherOverlapping = sorted.slice(0, i).some(higherDoc =>
+            locationsOverlap(higherDoc.location, lowerDoc.location)
+          );
+
+          if (hasHigherOverlapping) {
+            console.log(`[Storage] Auto-cleaning superseded issued doc ${lowerDoc.id} (${lowerDoc.docName}, docNo: ${lowerDoc.docNumber}, rev: ${lowerDoc.revisionNo}, loc: ${lowerDoc.location}) -> obsolete`);
+            await this.updateDocument(lowerDoc.id, { status: 'obsolete' });
+            obsoletedCount++;
+          }
+        }
+      }
+      if (obsoletedCount > 0) {
+        console.log(`[Storage] Cleaned up ${obsoletedCount} superseded issued document(s) to obsolete.`);
+      }
+      return obsoletedCount;
+    } catch (err) {
+      console.error("[Storage] Error in cleanUpAllSupersededIssuedDocuments:", err);
+      return 0;
+    }
   }
 
   async getDocumentsByDepartment(departmentId: string, status?: string, latestOnly: boolean = false): Promise<Document[]> {
@@ -490,22 +534,17 @@ export class SqlServerStorage implements IStorage {
     if (status) {
       query += ` AND d.status = @status`;
       request.input('status', sql.NVarChar, status);
-
-      if (latestOnly && status === 'issued') {
-        query += ` AND d.revision_no = (
-          SELECT MAX(d2.revision_no)
-          FROM documents d2
-          WHERE TRIM(LOWER(d2.doc_number)) = TRIM(LOWER(d.doc_number)) 
-          AND TRIM(LOWER(ISNULL(d2.location, ''))) = TRIM(LOWER(ISNULL(d.location, '')))
-          AND TRIM(LOWER(d2.status)) = 'issued'
-        )`;
-      }
     }
 
     query += ` ORDER BY d.created_at DESC`;
 
     const result = await request.query(query);
-    return result.recordset.map(mapDocument);
+    const docs = result.recordset.map(mapDocument);
+
+    if (latestOnly && status === 'issued') {
+      return filterLatestDocuments(docs);
+    }
+    return docs;
   }
 
   async createDocument(insertDocument: InsertDocument): Promise<Document> {

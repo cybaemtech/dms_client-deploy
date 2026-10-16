@@ -509,9 +509,9 @@ export class PDFService {
         }
         .header-table td { 
           border: 0.7pt solid #000; 
-          padding: 3px 6px; 
+          padding: 3px 5px; 
           font-size: 8.5pt; 
-          line-height: normal; 
+          line-height: 1.35; 
           color: #000; 
           vertical-align: top; 
           word-wrap: break-word;
@@ -531,19 +531,25 @@ export class PDFService {
         <table class="header-table">
           <tr><td colspan="5" class="company-name">NEELIKON FOOD DYES AND CHEMICALS LIMITED</td></tr>
           <tr>
-            <td style="width: 20%;"><span class="label">Location:</span> ${locationValue}</td>
-            <td style="width: 23%;"><span class="label">Date of Issue:</span> ${dateOfIssue}</td>
-            <td style="width: 12%;"><span class="label">Rev. No.:</span> ${revNo}</td>
-            <td style="width: 30%;">
-              <span class="label">Date of Rev. :</span> ${dateOfRev}<br>
-              <span class="label">Due Date:</span> ${dueDate}
+            <td style="width: 18.5%;"><span class="label">Location:</span> ${locationValue}</td>
+            <td style="width: 19%;">
+              <span class="label">Date of Issue:</span><br>
+              <span>${dateOfIssue}</span>
             </td>
-            <td style="width: 15%;"><span class="label">Page</span> <span class="pageNumber"></span> of <span class="totalPages"></span></td>
+            <td style="width: 9.5%; white-space: nowrap;"><span class="label">Rev. No.:</span> ${revNo}</td>
+            <td style="width: 38%;">
+              <div style="white-space: nowrap;"><span class="label">Date of Rev.:</span> ${dateOfRev}</div>
+              <div style="white-space: nowrap;"><span class="label">Due Date:</span> ${dueDate}</div>
+            </td>
+            <td style="width: 15%; text-align: center;"><span class="label">Page</span> <span class="pageNumber"></span> of <span class="totalPages"></span></td>
           </tr>
           <tr>
-            <td style="width: 20%;"><span class="label">Dept.:</span> ${deptName}</td>
-            <td colspan="3" style="width: 65%;"><span class="label">Title :</span> ${document.docName}</td>
-            <td style="width: 15%;"><span class="label">Doc. No.:</span> ${document.docNumber}</td>
+            <td style="width: 18.5%;"><span class="label">Dept.:</span> ${deptName}</td>
+            <td colspan="3" style="width: 66.5%;"><span class="label">Title :</span> ${document.docName}</td>
+            <td style="width: 15%;">
+              <span class="label">Doc. No.:</span><br>
+              <span>${document.docNumber}</span>
+            </td>
           </tr>
         </table>
       </div>`;

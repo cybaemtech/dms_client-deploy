@@ -4,6 +4,7 @@ import { promises as fsPromises } from 'fs';
 import * as fs from 'fs';
 import path from 'path';
 import { storage } from "./storage";
+import { getOverlappingUnits, locationsOverlap } from "@shared/locationUtils";
 import multer from "multer";
 import express, { type Request, Response } from "express";
 import { pdfService } from "./services/pdf-service";
@@ -259,8 +260,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/next-revision-series", async (req, res) => {
     try {
-      const { docNumber } = req.query;
-      const nextRevisionNo = await storage.getGlobalNextRevisionNo(docNumber as string);
+      const { docNumber, location } = req.query;
+      const nextRevisionNo = await storage.getGlobalNextRevisionNo(docNumber as string, location as string);
       res.json({ nextRevisionNo });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -271,7 +272,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       // Handle double-encoded document numbers (to support forward slashes)
       const docNumber = req.params.docNumber ? decodeURIComponent(decodeURIComponent(req.params.docNumber)) : undefined;
-      const nextRevisionNo = await storage.getGlobalNextRevisionNo(docNumber);
+      const location = req.query.location as string | undefined;
+      const nextRevisionNo = await storage.getGlobalNextRevisionNo(docNumber, location);
       res.json({ nextRevisionNo });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -281,10 +283,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // POST endpoint for getting next revision number
   app.post("/api/revision-number", async (req, res) => {
     try {
-      const { docNumber } = req.body;
-      const nextRevisionNo = await storage.getGlobalNextRevisionNo(docNumber);
+      const { docNumber, location } = req.body;
+      const nextRevisionNo = await storage.getGlobalNextRevisionNo(docNumber, location);
       res.json({ nextRevisionNo });
     } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // POST endpoint for checking duplicate document number per location
+  app.post("/api/documents/check-duplicate", async (req, res) => {
+    try {
+      const { docNumber, location, excludeDocId } = req.body;
+      if (!docNumber || typeof docNumber !== "string" || docNumber.trim().length === 0) {
+        return res.json({ isDuplicate: false });
+      }
+
+      const trimmedDocNum = docNumber.trim();
+      const existingDocs = await storage.getDocumentsByDocNumber(trimmedDocNum, location);
+
+      const conflict = existingDocs.find(d => {
+        if (excludeDocId && d.id === excludeDocId) return false;
+        const st = (d.status || "").toLowerCase().trim();
+        return ["pending", "approved", "issued", "declined"].includes(st);
+      });
+
+      if (conflict) {
+        const overlap = getOverlappingUnits(location, conflict.location);
+        return res.json({
+          isDuplicate: true,
+          conflict: {
+            id: conflict.id,
+            docName: conflict.docName,
+            docNumber: conflict.docNumber,
+            location: conflict.location || "All",
+            revisionNo: conflict.revisionNo,
+            status: conflict.status,
+          },
+          overlappingUnits: overlap,
+          message: `Document number "${trimmedDocNum}" already exists in location "${conflict.location || 'All'}" ("${conflict.docName}", Rev ${conflict.revisionNo}, Status: ${conflict.status.toUpperCase()}). In the same location (${overlap.join(', ')}), duplicate document numbers cannot be created.`,
+        });
+      }
+
+      return res.json({ isDuplicate: false });
+    } catch (error: any) {
+      console.error("[Check Duplicate] Error:", error);
       res.status(500).json({ message: error.message });
     }
   });
@@ -367,18 +410,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
         departmentName: creator.departmentName || null
       } : null;
 
-      // Guard: Prevent creating a NEW revision if one is already in progress (Pending, Approved, Declined)
-      // This helps avoid jumps from v0 directly to v2 if a v1 already exists but was declined.
-      if (req.body.previousVersionId && req.body.docNumber) {
-        const existingVersions = await storage.getDocumentsByDocNumber(req.body.docNumber, req.body.location);
-        const inProgress = existingVersions.find(v =>
-          ['pending', 'approved', 'declined'].includes((v.status || "").toLowerCase().trim())
-        );
+      // Guard: Check for duplicate document number in the same or overlapping location
+      if (req.body.docNumber) {
+        const docNumTrimmed = req.body.docNumber.trim();
+        const existingVersions = await storage.getDocumentsByDocNumber(docNumTrimmed, req.body.location);
 
-        if (inProgress) {
-          return res.status(400).json({
-            message: `A revision for this document (Revision ${inProgress.revisionNo}) is already in state "${inProgress.status}". Please edit or resubmit that version instead of starting a new one.`
+        if (!req.body.previousVersionId) {
+          // Creating a brand-new document (NOT a revision)
+          // Cannot create if an active document exists with this document number in an overlapping location
+          const activeDuplicate = existingVersions.find(d => {
+            const st = (d.status || "").toLowerCase().trim();
+            return ["pending", "approved", "issued", "declined"].includes(st);
           });
+
+          if (activeDuplicate) {
+            const overlap = getOverlappingUnits(req.body.location, activeDuplicate.location);
+            return res.status(400).json({
+              message: `Document number "${docNumTrimmed}" already exists in location "${activeDuplicate.location || 'All'}" ("${activeDuplicate.docName}", Rev ${activeDuplicate.revisionNo}, Status: ${activeDuplicate.status.toUpperCase()}). Duplicate document numbers cannot be created in the same location (${overlap.join(', ')}). If you want to create a new revision, use "Revise Document".`
+            });
+          }
+        } else {
+          // Guard: Prevent creating a NEW revision if one is already in progress (Pending, Approved, Declined)
+          // This helps avoid jumps from v0 directly to v2 if a v1 already exists but was declined.
+          const inProgress = existingVersions.find(v =>
+            v.id !== req.body.previousVersionId &&
+            ['pending', 'approved', 'declined'].includes((v.status || "").toLowerCase().trim())
+          );
+
+          if (inProgress) {
+            return res.status(400).json({
+              message: `A revision for this document (Revision ${inProgress.revisionNo}) is already in state "${inProgress.status}". Please edit or resubmit that version instead of starting a new one.`
+            });
+          }
         }
       }
 
@@ -534,6 +597,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const updateData: any = {
         updatedAt: new Date()
       };
+
+      const checkDocNumber = (docNumber !== undefined ? docNumber : document.docNumber)?.trim();
+      const checkLocation = location !== undefined ? location : document.location;
+
+      if (checkDocNumber && (docNumber !== undefined || location !== undefined)) {
+        const existingVersions = await storage.getDocumentsByDocNumber(checkDocNumber, checkLocation);
+        const conflict = existingVersions.find(d =>
+          d.id !== req.params.id &&
+          d.id !== document.previousVersionId &&
+          d.previousVersionId !== req.params.id &&
+          ["pending", "approved", "issued", "declined"].includes((d.status || "").toLowerCase().trim())
+        );
+
+        if (conflict) {
+          const overlap = getOverlappingUnits(checkLocation, conflict.location);
+          return res.status(400).json({
+            message: `Document number "${checkDocNumber}" already exists in location "${conflict.location || 'All'}" ("${conflict.docName}", Rev ${conflict.revisionNo}, Status: ${conflict.status.toUpperCase()}). Duplicate document numbers cannot be created in the same location (${overlap.join(', ')}).`
+          });
+        }
+      }
 
       debugLog(`[Update] Status check: current=${currentStatus}, original=${document.status}`);
       // If document was declined, reset to pending upon edit and clear old remarks
@@ -797,19 +880,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         docNumber: docNumber || undefined
       });
 
-      // After issuing, ensure any previous versions that were still 'issued' are marked as 'obsolete'
+      // After issuing, ensure any previous versions that were still 'issued' with overlapping locations are marked as 'obsolete'
       const currentDocNumber = docNumber || document.docNumber;
       if (currentDocNumber) {
         try {
-          const allVersions = await storage.getDocumentsByDocNumber(currentDocNumber, document.location || undefined);
-          for (const version of allVersions) {
-            const statusStr = (version.status || "").toLowerCase().trim();
-            // IMPORTANT: Only mark as obsolete if it's the SAME document chain (same location)
-            if (version.id !== req.params.id && statusStr === 'issued') {
-              console.log(`[Obsolete] Marking version ${version.revisionNo} (ID: ${version.id}) of ${currentDocNumber} at ${document.location || 'unassigned'} as obsolete`);
-              await storage.updateDocument(version.id, { status: 'obsolete' });
-            }
-          }
+          await storage.obsoleteSupersededIssuedDocuments(currentDocNumber, document.location || undefined, req.params.id);
         } catch (supErr) {
           console.error("[Obsolete] Error marking previous versions as obsolete:", supErr);
         }
