@@ -2521,25 +2521,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         const distZip = path.join(rootDir, "dist.zip");
+        const deployDistDir = path.join(rootDir, "dist");
+        if (!fs.existsSync(deployDistDir)) {
+          fs.mkdirSync(deployDistDir, { recursive: true });
+        }
+
         if (fs.existsSync(distZip)) {
-          log("Step 2/2: Applying production dist files from dist.zip...");
+          log("Step 2/2: Applying production bundle into dist folder (C:\\inetpub\\wwwroot\\dms\\dist)...");
           try {
             const zip = new AdmZip(distZip);
-            // Preserve production .env, uploads, and pdfs
-            const envPath = path.join(rootDir, '.env');
+            // Preserve production .env inside dist folder
+            const envPath = path.join(deployDistDir, '.env');
             const envBackup = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : null;
 
-            zip.extractAllTo(rootDir, true);
+            zip.extractAllTo(deployDistDir, true);
 
             if (envBackup) {
               fs.writeFileSync(envPath, envBackup, 'utf8');
-              log("✓ Preserved production .env settings");
+              log("✓ Preserved production .env settings in dist");
             }
-            log("✓ Production dist files successfully updated (clean dist deployment)!");
+            log("✓ Production dist folder successfully updated (C:\\inetpub\\wwwroot\\dms\\dist)!");
           } catch (zipErr: any) {
             log(`⚠ Extraction notice: ${zipErr.message}. Trying PowerShell fallback...`);
-            await execAsync(`powershell -NoProfile -Command "Expand-Archive -Path dist.zip -DestinationPath . -Force"`, { cwd: rootDir, timeout: 30000 });
+            await execAsync(`powershell -NoProfile -Command "Expand-Archive -Path dist.zip -DestinationPath dist -Force"`, { cwd: rootDir, timeout: 30000 });
           }
+
+          // Clean up any files that were accidentally in root folder so root only shows dist/ and node_modules
+          try {
+            const rootFilesToClean = ['public', 'app.js', 'index.js', 'web.config', 'package.json', 'README.md', 'debug.log'];
+            for (const item of rootFilesToClean) {
+              const itemPath = path.join(rootDir, item);
+              if (fs.existsSync(itemPath)) {
+                const stat = fs.statSync(itemPath);
+                if (stat.isDirectory()) {
+                  fs.rmSync(itemPath, { recursive: true, force: true });
+                } else {
+                  fs.unlinkSync(itemPath);
+                }
+              }
+            }
+          } catch (cleanErr) {}
         } else {
           log("Step 2/2: Production dist package is up-to-date.");
         }
