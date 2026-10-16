@@ -1644,15 +1644,6 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                 <Building2 className="w-3.5 h-3.5" />
                 Departments
               </TabsTrigger>
-              <TabsTrigger value="software-updates" className="gap-2 text-xs h-8 px-4" data-testid="tab-software-updates">
-                <GitBranch className="w-3.5 h-3.5" />
-                Software Updates
-                {updateStatus?.hasUpdate && (
-                  <Badge className="bg-amber-500 text-white text-[9px] px-1 py-0 h-4 font-bold border-0">
-                    {updateStatus.behindCount} New
-                  </Badge>
-                )}
-              </TabsTrigger>
             </TabsList>
           </motion.div>
 
@@ -2566,29 +2557,6 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                     </Card>
                   )}
                 </div>
-              </motion.div>
-            </TabsContent>
-
-            <TabsContent value="software-updates" className="mt-6">
-              <motion.div
-                key="software-updates"
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.3 }}
-              >
-                <SoftwareUpdatePanel
-                  updateStatus={updateStatus}
-                  updateStatusLoading={updateStatusLoading}
-                  isFetchingUpdate={isFetchingUpdate}
-                  refetchUpdateStatus={refetchUpdateStatus}
-                  applyUpdateMutation={applyUpdateMutation}
-                  showLogConsole={showLogConsole}
-                  setShowLogConsole={setShowLogConsole}
-                  countdown={countdown}
-                  lastUpdateResponse={lastUpdateResponse}
-                  adminName={adminName}
-                />
               </motion.div>
             </TabsContent>
           </AnimatePresence>
