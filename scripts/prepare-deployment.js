@@ -179,10 +179,22 @@ console.log('✓ Created: README.md');
 // 9. Generate dist.zip containing only dist package files for client server deployment
 try {
     const zip = new AdmZip();
-    zip.addLocalFolder(distDir);
+    const entries = fs.readdirSync(distDir);
+    for (const entry of entries) {
+        if (['daemon', 'node_modules', '.git'].includes(entry) || entry.endsWith('.log')) {
+            continue;
+        }
+        const fullPath = path.join(distDir, entry);
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+            zip.addLocalFolder(fullPath, entry);
+        } else {
+            zip.addLocalFile(fullPath);
+        }
+    }
     const zipPath = path.join(rootDir, 'dist.zip');
     zip.writeZip(zipPath);
-    console.log('✓ Created: dist.zip (production bundle for client server updates)');
+    console.log('✓ Created: dist.zip (clean production bundle, excluded daemon/logs)');
 } catch (error) {
     console.warn('⚠ Note: Could not create dist.zip:', error.message);
 }
