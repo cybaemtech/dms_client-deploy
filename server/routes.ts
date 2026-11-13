@@ -321,11 +321,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Production-plant rule: if the caller supplied a departmentId,
         // only flag as duplicate when the existing doc belongs to the SAME department.
         // Different departments at the same location may hold the same document number.
+        // If the existing doc has no departmentId (legacy doc), treat as different dept — allow.
         if (departmentId) {
           const existingDeptId =
             (d.creatorData && d.creatorData.departmentId) ? d.creatorData.departmentId : null;
-          if (existingDeptId && existingDeptId !== departmentId) {
-            // Different department — not a duplicate for this department
+          if (!existingDeptId || existingDeptId !== departmentId) {
+            // Different department or legacy doc with no dept info — not a duplicate
             return false;
           }
         }
@@ -453,11 +454,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!["pending", "approved", "issued", "declined"].includes(st)) return false;
 
             // Production-plant rule: only flag duplicate if same department
+            // If existing doc has no dept info (legacy), treat as different dept — allow.
             if (creatorDeptId) {
               const existingDeptId =
                 (d.creatorData && d.creatorData.departmentId) ? d.creatorData.departmentId : null;
-              if (existingDeptId && existingDeptId !== creatorDeptId) {
-                // Different department at same location — allowed
+              if (!existingDeptId || existingDeptId !== creatorDeptId) {
+                // Different department or legacy doc — allowed
                 return false;
               }
             }
@@ -667,9 +669,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             return false;
           }
           // Production-plant rule: if both documents have department info, only conflict if same department
+          // If existing doc has no dept info (legacy), treat as different dept — allow.
           if (targetDeptId) {
             const existingDeptId = d.creatorData?.departmentId || null;
-            if (existingDeptId && existingDeptId !== targetDeptId) {
+            if (!existingDeptId || existingDeptId !== targetDeptId) {
               return false;
             }
           }
