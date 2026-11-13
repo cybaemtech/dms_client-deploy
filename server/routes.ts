@@ -301,9 +301,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // POST endpoint for checking duplicate document number per location
+  // Production-plant logic: same doc number is allowed if it belongs to a DIFFERENT department
+  // (12 departments at same plant can each have their own copy of the same form).
   app.post("/api/documents/check-duplicate", async (req, res) => {
     try {
-      const { docNumber, location, excludeDocId } = req.body;
+      const { docNumber, location, excludeDocId, departmentId } = req.body;
       if (!docNumber || typeof docNumber !== "string" || docNumber.trim().length === 0) {
         return res.json({ isDuplicate: false });
       }
@@ -314,7 +316,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const conflict = existingDocs.find(d => {
         if (excludeDocId && d.id === excludeDocId) return false;
         const st = (d.status || "").toLowerCase().trim();
-        return ["pending", "approved", "issued", "declined"].includes(st);
+        if (!["pending", "approved", "issued", "declined"].includes(st)) return false;
+
+        // Production-plant rule: if the caller supplied a departmentId,
+        // only flag as duplicate when the existing doc belongs to the SAME department.
+        // Different departments at the same location may hold the same document number.
+        if (departmentId) {
+          const existingDeptId =
+            (d.creatorData && d.creatorData.departmentId) ? d.creatorData.departmentId : null;
+          if (existingDeptId && existingDeptId !== departmentId) {
+            // Different department — not a duplicate for this department
+            return false;
+          }
+        }
+
+        return true;
       });
 
       if (conflict) {
@@ -419,17 +435,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         departmentName: creator.departmentName || null
       } : null;
 
-      // Guard: Check for duplicate document number in the same or overlapping location
+      // Guard: Check for duplicate document number in the same or overlapping location.
+      // Production-plant rule: different departments at the same plant may each hold
+      // the same document number independently (12 departments, single approver per plant).
       if (req.body.docNumber) {
         const docNumTrimmed = req.body.docNumber.trim();
         const existingVersions = await storage.getDocumentsByDocNumber(docNumTrimmed, req.body.location);
+        // Resolve creator's departmentId for department-scoped duplicate check
+        const creatorDeptId = creator?.departmentId || req.body.departmentId || null;
 
         if (!req.body.previousVersionId) {
           // Creating a brand-new document (NOT a revision)
-          // Cannot create if an active document exists with this document number in an overlapping location
+          // Cannot create if an active document exists with this document number in an
+          // overlapping location AND the same department.
           const activeDuplicate = existingVersions.find(d => {
             const st = (d.status || "").toLowerCase().trim();
-            return ["pending", "approved", "issued", "declined"].includes(st);
+            if (!["pending", "approved", "issued", "declined"].includes(st)) return false;
+
+            // Production-plant rule: only flag duplicate if same department
+            if (creatorDeptId) {
+              const existingDeptId =
+                (d.creatorData && d.creatorData.departmentId) ? d.creatorData.departmentId : null;
+              if (existingDeptId && existingDeptId !== creatorDeptId) {
+                // Different department at same location — allowed
+                return false;
+              }
+            }
+            return true;
           });
 
           if (activeDuplicate) {
@@ -548,8 +580,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       await storage.updateDocument(document.id, { wordFilePath: filePath });
 
-      const approvers = await storage.getUsersByRole("approver");
-      for (const approver of approvers) {
+      // Production-plant rule: notify only the approver(s) whose location overlaps
+      // with the document's location (single approver per plant covers all 12 departments).
+      // Fall back to ALL approvers when no location is set on the document or the approver.
+      const allApprovers = await storage.getUsersByRole("approver");
+      const docLocation = document.location || null;
+      const approversToNotify = allApprovers.filter(approver => {
+        const approverLocation = approver.location || null;
+        // If either has no location, notify (global approver)
+        if (!docLocation || !approverLocation) return true;
+        // Otherwise only notify if their location overlaps the document's location
+        return locationsOverlap(approverLocation, docLocation);
+      });
+      // Ensure at least one approver is notified (fallback to all if none matched)
+      const finalApprovers = approversToNotify.length > 0 ? approversToNotify : allApprovers;
+      for (const approver of finalApprovers) {
         await storage.createNotification({
           userId: approver.id,
           documentId: document.id,
@@ -609,15 +654,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const checkDocNumber = (docNumber !== undefined ? docNumber : document.docNumber)?.trim();
       const checkLocation = location !== undefined ? location : document.location;
+      const targetDeptId = document.creatorData?.departmentId || null;
 
       if (checkDocNumber && (docNumber !== undefined || location !== undefined)) {
         const existingVersions = await storage.getDocumentsByDocNumber(checkDocNumber, checkLocation);
-        const conflict = existingVersions.find(d =>
-          d.id !== req.params.id &&
-          d.id !== document.previousVersionId &&
-          d.previousVersionId !== req.params.id &&
-          ["pending", "approved", "issued", "declined"].includes((d.status || "").toLowerCase().trim())
-        );
+        const conflict = existingVersions.find(d => {
+          if (d.id === req.params.id || d.id === document.previousVersionId || d.previousVersionId === req.params.id) {
+            return false;
+          }
+          const st = (d.status || "").toLowerCase().trim();
+          if (!["pending", "approved", "issued", "declined"].includes(st)) {
+            return false;
+          }
+          // Production-plant rule: if both documents have department info, only conflict if same department
+          if (targetDeptId) {
+            const existingDeptId = d.creatorData?.departmentId || null;
+            if (existingDeptId && existingDeptId !== targetDeptId) {
+              return false;
+            }
+          }
+          return true;
+        });
 
         if (conflict) {
           const overlap = getOverlappingUnits(checkLocation, conflict.location);
@@ -727,10 +784,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await storage.assignDocumentToDepartments(req.params.id, departments);
       }
 
-      // Notify approvers if resubmitted
+      // Notify approvers if resubmitted (production-plant rule: match approver location)
       if (document.status === "declined") {
-        const approvers = await storage.getUsersByRole("approver");
-        for (const approver of approvers) {
+        const allApprovers = await storage.getUsersByRole("approver");
+        const docLocation = (updateData.location !== undefined ? updateData.location : document.location) || null;
+        const approversToNotify = allApprovers.filter(approver => {
+          const approverLocation = approver.location || null;
+          if (!docLocation || !approverLocation) return true;
+          return locationsOverlap(approverLocation, docLocation);
+        });
+        const finalApprovers = approversToNotify.length > 0 ? approversToNotify : allApprovers;
+        for (const approver of finalApprovers) {
           await storage.createNotification({
             userId: approver.id,
             documentId: document.id,

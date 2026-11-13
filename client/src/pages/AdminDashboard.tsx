@@ -748,6 +748,7 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
   const [activeTab, setActiveTab] = useState("overview");
   const [searchQuery, setSearchQuery] = useState("");
+  const [userSearchQuery, setUserSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("newest");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [documentToDelete, setDocumentToDelete] = useState<string | null>(null);
@@ -1158,10 +1159,27 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
   const getFilteredAndSortedDocs = (docs: any[]) => {
     const sorted = sortDocuments(docs);
     if (!searchQuery) return sorted;
+    const q = searchQuery.toLowerCase().trim();
     return sorted.filter(doc =>
-      doc.docName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      doc.docNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (doc.preparerName && doc.preparerName.toLowerCase().includes(searchQuery.toLowerCase()))
+      (doc.docName && doc.docName.toLowerCase().includes(q)) ||
+      (doc.docNumber && doc.docNumber.toLowerCase().includes(q)) ||
+      (doc.location && doc.location.toLowerCase().includes(q)) ||
+      (doc.preparerName && doc.preparerName.toLowerCase().includes(q))
+    );
+  };
+
+  const filterUsers = (usersList: any[]) => {
+    if (!usersList) return [];
+    if (!userSearchQuery) return usersList;
+    const q = userSearchQuery.toLowerCase().trim();
+    return usersList.filter(u =>
+      (u.fullName && u.fullName.toLowerCase().includes(q)) ||
+      (u.username && u.username.toLowerCase().includes(q)) ||
+      (u.id && String(u.id).toLowerCase().includes(q)) ||
+      (u.departmentName && u.departmentName.toLowerCase().includes(q)) ||
+      (u.departmentCode && u.departmentCode.toLowerCase().includes(q)) ||
+      (u.location && u.location.toLowerCase().includes(q)) ||
+      (u.role && u.role.toLowerCase().includes(q))
     );
   };
 
@@ -1521,12 +1539,35 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                 transition={{ duration: 0.3 }}
               >
                 <Card className="p-3.5">
-                  <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
+                  <div className="flex items-center justify-between mb-4 flex-wrap gap-4">
                     <h3 className="text-lg font-semibold">All Documents</h3>
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge variant="outline">{documentsData?.stats.total || 0} Total</Badge>
                       <Badge variant="secondary" className="bg-amber-500/10 text-amber-600">{documentsData?.stats.pending || 0} Pending</Badge>
                       <Badge variant="secondary" className="bg-green-500/10 text-green-600">{documentsData?.stats.issued || 0} Issued</Badge>
+                    </div>
+                  </div>
+
+                  {/* Search Bar for Documents */}
+                  <div className="mb-4">
+                    <div className="relative w-full max-w-md">
+                      <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        type="text"
+                        placeholder="Search documents by title, number, location or preparer..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="pl-8 pr-8 h-9 text-xs bg-slate-50 border-slate-200 focus:bg-white transition-colors"
+                      />
+                      {searchQuery && (
+                        <button
+                          onClick={() => setSearchQuery("")}
+                          className="absolute right-2.5 top-2.5 text-xs text-muted-foreground hover:text-foreground"
+                          title="Clear search"
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -1972,7 +2013,7 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                 exit={{ opacity: 0, y: -20 }}
                 transition={{ duration: 0.3 }}
               >
-                <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-4">
                   <div>
                     <h3 className="text-lg font-semibold">User Management</h3>
                     <p className="text-sm text-muted-foreground">Manage system users and their permissions</p>
@@ -1982,6 +2023,30 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                     Add New User
                   </Button>
                 </div>
+
+                {/* Search Bar for Users */}
+                <div className="mb-4">
+                  <div className="relative w-full max-w-md">
+                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      type="text"
+                      placeholder="Search users by name, username, department, location or role..."
+                      value={userSearchQuery}
+                      onChange={(e) => setUserSearchQuery(e.target.value)}
+                      className="pl-8 pr-8 h-9 text-xs bg-slate-50 border-slate-200 focus:bg-white transition-colors"
+                    />
+                    {userSearchQuery && (
+                      <button
+                        onClick={() => setUserSearchQuery("")}
+                        className="absolute right-2.5 top-2.5 text-xs text-muted-foreground hover:text-foreground"
+                        title="Clear search"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <Card className="p-3.5">
                     <div className="flex items-center justify-between mb-4">
@@ -1989,17 +2054,17 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                         <UserCog className="w-5 h-5 text-blue-500" />
                         <h3 className="text-lg font-semibold">Creators</h3>
                       </div>
-                      <Badge variant="secondary">{usersData?.creators.length || 0}</Badge>
+                      <Badge variant="secondary">{filterUsers(usersData?.creators || []).length}</Badge>
                     </div>
                     <ScrollArea className="h-[300px]">
                       <div className="space-y-2">
-                        {usersData?.creators.map((user, index) => (
+                        {filterUsers(usersData?.creators || []).map((user, index) => (
                           <UserCard key={`creator-${user.id || index}`} user={user} role="creator" index={index} onDelete={handleDeleteUser} onEdit={handleEditUser} />
                         ))}
-                        {(!usersData?.creators || usersData.creators.length === 0) && (
+                        {filterUsers(usersData?.creators || []).length === 0 && (
                           <div className="text-center py-8 text-muted-foreground">
                             <Users className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                            <p className="text-sm">No creators found</p>
+                            <p className="text-sm">{userSearchQuery ? "No matching creators found" : "No creators found"}</p>
                           </div>
                         )}
                       </div>
@@ -2012,17 +2077,17 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                         <UserCheck className="w-5 h-5 text-green-500" />
                         <h3 className="text-lg font-semibold">Approvers</h3>
                       </div>
-                      <Badge variant="secondary">{usersData?.approvers.length || 0}</Badge>
+                      <Badge variant="secondary">{filterUsers(usersData?.approvers || []).length}</Badge>
                     </div>
                     <ScrollArea className="h-[300px]">
                       <div className="space-y-2">
-                        {usersData?.approvers.map((user, index) => (
+                        {filterUsers(usersData?.approvers || []).map((user, index) => (
                           <UserCard key={`approver-${user.id || index}`} user={user} role="approver" index={index} onDelete={handleDeleteUser} onEdit={handleEditUser} />
                         ))}
-                        {(!usersData?.approvers || usersData.approvers.length === 0) && (
+                        {filterUsers(usersData?.approvers || []).length === 0 && (
                           <div className="text-center py-8 text-muted-foreground">
                             <Users className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                            <p className="text-sm">No approvers found</p>
+                            <p className="text-sm">{userSearchQuery ? "No matching approvers found" : "No approvers found"}</p>
                           </div>
                         )}
                       </div>
@@ -2035,17 +2100,17 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                         <Send className="w-5 h-5 text-purple-500" />
                         <h3 className="text-lg font-semibold">Issuers</h3>
                       </div>
-                      <Badge variant="secondary">{usersData?.issuers.length || 0}</Badge>
+                      <Badge variant="secondary">{filterUsers(usersData?.issuers || []).length}</Badge>
                     </div>
                     <ScrollArea className="h-[300px]">
                       <div className="space-y-2">
-                        {usersData?.issuers.map((user, index) => (
+                        {filterUsers(usersData?.issuers || []).map((user, index) => (
                           <UserCard key={`issuer-${user.id || index}`} user={user} role="issuer" index={index} onDelete={handleDeleteUser} onEdit={handleEditUser} />
                         ))}
-                        {(!usersData?.issuers || usersData.issuers.length === 0) && (
+                        {filterUsers(usersData?.issuers || []).length === 0 && (
                           <div className="text-center py-8 text-muted-foreground">
                             <Users className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                            <p className="text-sm">No issuers found</p>
+                            <p className="text-sm">{userSearchQuery ? "No matching issuers found" : "No issuers found"}</p>
                           </div>
                         )}
                       </div>
@@ -2058,17 +2123,17 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                         <Shield className="w-5 h-5 text-orange-500" />
                         <h3 className="text-lg font-semibold">Administrators</h3>
                       </div>
-                      <Badge variant="secondary">{usersData?.admins.length || 0}</Badge>
+                      <Badge variant="secondary">{filterUsers(usersData?.admins || []).length}</Badge>
                     </div>
                     <ScrollArea className="h-[300px]">
                       <div className="space-y-2">
-                        {usersData?.admins.map((user, index) => (
+                        {filterUsers(usersData?.admins || []).map((user, index) => (
                           <UserCard key={`admin-${user.id || index}`} user={user} role="admin" index={index} onDelete={handleDeleteUser} onEdit={handleEditUser} />
                         ))}
-                        {(!usersData?.admins || usersData.admins.length === 0) && (
+                        {filterUsers(usersData?.admins || []).length === 0 && (
                           <div className="text-center py-8 text-muted-foreground">
                             <Shield className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                            <p className="text-sm">No administrators found</p>
+                            <p className="text-sm">{userSearchQuery ? "No matching administrators found" : "No administrators found"}</p>
                           </div>
                         )}
                       </div>

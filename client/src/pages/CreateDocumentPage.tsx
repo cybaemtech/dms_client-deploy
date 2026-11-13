@@ -16,6 +16,7 @@ interface CreateDocumentPageProps {
   userName?: string;
   userFullName?: string;
   userLocation?: string;
+  userDepartmentId?: string | null;
   userRole?: string;
   initialData?: any;
 }
@@ -27,6 +28,7 @@ export default function CreateDocumentPage({
   userName = "User",
   userFullName,
   userLocation,
+  userDepartmentId,
   userRole,
   initialData
 }: CreateDocumentPageProps) {
@@ -83,6 +85,7 @@ export default function CreateDocumentPage({
           onCancel={onBack}
           defaultPreparerName={userFullName}
           defaultLocation={userLocation}
+          departmentId={userDepartmentId || undefined}
           initialData={initialData}
           migrationMode={migrationMode}
         />

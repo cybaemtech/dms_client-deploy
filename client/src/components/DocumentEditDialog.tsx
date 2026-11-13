@@ -199,6 +199,7 @@ export default function DocumentEditDialog({
             docNumber: watchedDocNumber.trim(),
             location: watchedLocation || undefined,
             excludeDocId: doc?.id,
+            departmentId: doc?.creatorDepartmentId || doc?.creatorData?.departmentId || undefined,
           }),
         });
         if (response.ok) {
@@ -293,6 +294,7 @@ export default function DocumentEditDialog({
               docNumber: data.docNumber.trim(),
               location: data.location || undefined,
               excludeDocId: doc.id,
+              departmentId: doc?.creatorDepartmentId || doc?.creatorData?.departmentId || undefined,
             }),
           });
           if (checkRes.ok) {

@@ -408,6 +408,7 @@ function Router() {
               userName={userName}
               userFullName={userFullName}
               userLocation={userLocationState}
+              userDepartmentId={userDepartmentId}
               initialData={initialDocumentData}
             />
           )}

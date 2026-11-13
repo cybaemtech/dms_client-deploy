@@ -51,11 +51,12 @@ interface DocumentUploadFormProps {
   onCancel?: () => void;
   defaultPreparerName?: string;
   defaultLocation?: string;
+  departmentId?: string;
   initialData?: any;
   migrationMode?: boolean; // For adding existing documents
 }
 
-export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparerName, defaultLocation, initialData, migrationMode = false }: DocumentUploadFormProps) {
+export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparerName, defaultLocation, departmentId, initialData, migrationMode = false }: DocumentUploadFormProps) {
   const { toast } = useToast();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string>("");
@@ -119,6 +120,7 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
           body: JSON.stringify({
             docNumber: watchedDocNumber.trim(),
             location: watchedLocation || undefined,
+            departmentId: departmentId || undefined,
           }),
         });
         if (response.ok) {
@@ -241,6 +243,7 @@ export default function DocumentUploadForm({ onSubmit, onCancel, defaultPreparer
           body: JSON.stringify({
             docNumber: data.docNumber.trim(),
             location: data.location || undefined,
+            departmentId: departmentId || undefined,
           }),
         });
         if (checkRes.ok) {
