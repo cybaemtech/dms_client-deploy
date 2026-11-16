@@ -1337,7 +1337,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const fileName = path.basename(fullPath);
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.attachment(fileName);
 
         const fileBuffer = await fsPromises.readFile(fullPath);
         res.send(fileBuffer);
@@ -1578,8 +1578,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.setHeader('Content-Type', 'application/pdf');
 
         if (download === 'true') {
-          const fileName = `${document.docNumber}_${document.docName}_PREVIEW.pdf`.replace(/[/\\?%*:|"<>]/g, '-');
-          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+          const fileName = `${document.docNumber}_${document.docName}_PREVIEW.pdf`.replace(/[\r\n]/g, '').replace(/[/\\?%*:|"<>]/g, '-');
+          res.attachment(fileName);
         } else {
           res.setHeader('Content-Disposition', 'inline; filename="document-preview.pdf"');
         }
@@ -1751,8 +1751,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.setHeader('Content-Type', 'application/pdf');
 
         if (download === 'true') {
-          const fileName = `${document.docNumber}_${document.docName}_v${document.revisionNo}.pdf`.replace(/[/\\?%*:|"<>]/g, '-');
-          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+          const fileName = `${document.docNumber}_${document.docName}_v${document.revisionNo}.pdf`.replace(/[\r\n]/g, '').replace(/[/\\?%*:|"<>]/g, '-');
+          res.attachment(fileName);
         } else {
           res.setHeader('Content-Disposition', 'inline; filename="document.pdf"');
         }
@@ -1965,13 +1965,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       debugLog(`[Download - ${REQUEST_ID}]Success! Sending ${pdfBuffer.length} bytes`);
 
-      const safeDocNumber = (document.docNumber || "document").trim().replace(/[/\\?%*:|"<>]/g, '-');
-      const safeDocName = (document.docName || "").trim().replace(/[/\\?%*:|"<>]/g, '-');
+      const safeDocNumber = (document.docNumber || "document").trim().replace(/[\r\n]/g, '').replace(/[/\\?%*:|"<>]/g, '-');
+      const safeDocName = (document.docName || "").trim().replace(/[\r\n]/g, '').replace(/[/\\?%*:|"<>]/g, '-');
       const fileName = `${safeDocNumber}_${safeDocName}_v${document.revisionNo}.pdf`;
 
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-      res.setHeader('Content-Length', pdfBuffer.length);
+      res.attachment(fileName);
+      res.setHeader('Content-Length', pdfBuffer.length.toString());
       res.setHeader('Cache-Control', 'no-cache');
       res.send(pdfBuffer);
 
