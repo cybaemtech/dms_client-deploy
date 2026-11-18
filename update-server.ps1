@@ -1,9 +1,11 @@
-Write-Host "====================================================" -ForegroundColor Cyan
+﻿Write-Host "====================================================" -ForegroundColor Cyan
 Write-Host "             DMS Software Auto-Update               " -ForegroundColor Cyan
 Write-Host "====================================================" -ForegroundColor Cyan
 
-Write-Host "`n[1/4] Stopping DMS services..." -ForegroundColor Yellow
+Write-Host "`n[1/4] Stopping DMS services and releasing files..." -ForegroundColor Yellow
 Stop-Service -Name "*dms*" -Force -ErrorAction SilentlyContinue
+Stop-Process -Name "node" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
 
 Write-Host "`n[2/4] Fetching latest release package..." -ForegroundColor Yellow
 git sparse-checkout init --no-cone 2>$null

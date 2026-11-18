@@ -4,8 +4,8 @@ echo ====================================================
 echo             DMS Software Auto-Update
 echo ====================================================
 
-echo [1/4] Stopping DMS Node service...
-powershell -NoProfile -Command "Stop-Service -Name '*dms*' -Force -ErrorAction SilentlyContinue"
+echo [1/4] Stopping DMS Node service and killing running node instances...
+powershell -NoProfile -Command "Stop-Service -Name '*dms*' -Force -ErrorAction SilentlyContinue; Stop-Process -Name 'node' -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2"
 
 echo [2/4] Fetching latest production build...
 git sparse-checkout init --no-cone >nul 2>&1
