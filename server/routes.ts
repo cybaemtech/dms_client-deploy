@@ -1618,6 +1618,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Creator raw PDF preview — no stamps, no watermarks; for PENDING docs only
+  app.get("/api/documents/:id/creator-preview-pdf", async (req, res) => {
+    try {
+      const { userId } = req.query;
+      if (!userId) {
+        return res.status(400).json({ message: "userId query parameter is required" });
+      }
+
+      const user = await storage.getUser(userId as string);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      // Allow creator, admin; also allow approver/issuer (they may want to preview too)
+      if (!["creator", "admin", "approver", "issuer"].includes(user.role)) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      const document = await storage.getDocument(req.params.id);
+      if (!document) {
+        return res.status(404).json({ message: "Document not found" });
+      }
+
+      // Allow pending, approved, declined — anything that has a Word file
+      if (!document.wordFilePath) {
+        return res.status(404).json({ message: "No Word file uploaded for this document" });
+      }
+
+      const fullWordPath = path.join(pdfService.uploadsDir, path.basename(document.wordFilePath));
+      try {
+        await fsPromises.access(fullWordPath);
+      } catch {
+        return res.status(404).json({ message: "Word file not found on server" });
+      }
+
+      let pdfPath: string;
+      try {
+        // Raw LibreOffice conversion — no header/footer stamps
+        pdfPath = await pdfService.convertWordToNativePdfWithLibreOffice(fullWordPath);
+      } catch (err: any) {
+        console.error("[Creator Preview] LibreOffice conversion error:", err);
+        return res.status(500).json({ message: "Failed to convert document to PDF." });
+      }
+
+      const pdfBuffer = await fsPromises.readFile(pdfPath);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="preview.pdf"');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Content-Length', pdfBuffer.length.toString());
+      res.send(pdfBuffer);
+    } catch (error: any) {
+      console.error("[Creator Preview] Error:", error);
+      res.status(500).json({ message: error.message || 'Internal server error' });
+    }
+  });
+
   app.get("/api/documents/:id/pdf", async (req, res) => {
     try {
       console.log('PDF request for document:', req.params.id);

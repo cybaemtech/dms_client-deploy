@@ -15,6 +15,7 @@ interface DocumentViewDialogProps {
   onDownload?: (doc: Document) => void;
   onViewWord?: (doc: Document) => void;
   onViewPdf?: (doc: Document) => void;
+  onPreviewPdf?: (doc: Document) => void;
 }
 
 interface DocumentDetails {
@@ -51,6 +52,7 @@ export default function DocumentViewDialog({
   onDownload,
   onViewWord,
   onViewPdf,
+  onPreviewPdf,
 }: DocumentViewDialogProps) {
   const { data: docDetails, isLoading } = useQuery<DocumentDetails>({
     queryKey: ["/api/documents", document?.id],
@@ -152,6 +154,18 @@ export default function DocumentViewDialog({
                   >
                     <FileText className="w-4 h-4 mr-2" />
                     View PDF
+                  </Button>
+                )}
+                {onPreviewPdf && (document.status?.toLowerCase() === "pending" || document.status?.toLowerCase() === "approved" || document.status?.toLowerCase() === "declined") && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onPreviewPdf(document)}
+                    data-testid="button-preview-pdf"
+                    className="border-orange-400 text-orange-600 hover:bg-orange-50"
+                  >
+                    <FileText className="w-4 h-4 mr-2" />
+                    Preview PDF
                   </Button>
                 )}
                 {onViewWord && document.status?.toLowerCase() !== "issued" && document.status?.toLowerCase() !== "obsolete" && (

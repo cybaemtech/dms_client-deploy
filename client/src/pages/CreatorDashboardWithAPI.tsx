@@ -495,6 +495,12 @@ export default function CreatorDashboardWithAPI({
     setPdfViewerOpen(true);
   };
 
+  const handleCreatorPreviewPdf = (doc: Document) => {
+    // Open raw LibreOffice PDF (no stamps) in a new tab for pending/approved/declined docs
+    const url = `/api/documents/${doc.id}/creator-preview-pdf?userId=${userId}`;
+    window.open(url, '_blank');
+  };
+
   const handleSaveEdit = async (id: string, data: any) => {
     console.log(`[Dashboard] Mutualting document update for ID: ${id}`, data);
     try {
@@ -756,6 +762,7 @@ export default function CreatorDashboardWithAPI({
         onDownload={handleDownload}
         onViewWord={handleViewWord}
         onViewPdf={handleViewPDF}
+        onPreviewPdf={handleCreatorPreviewPdf}
       />
 
       <DocumentEditDialog

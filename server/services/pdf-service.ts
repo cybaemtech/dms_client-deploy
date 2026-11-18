@@ -76,7 +76,7 @@ export class PDFService {
     }
   }
 
-  private async convertWordToNativePdfWithLibreOffice(wordFilePath: string): Promise<string> {
+  async convertWordToNativePdfWithLibreOffice(wordFilePath: string): Promise<string> {
     const libreOfficePath = process.env.LIBREOFFICE_PATH || 'C:\\Program Files\\LibreOffice\\program\\soffice.exe';
     if (!existsSync(libreOfficePath)) throw new Error('LibreOffice not found');
 
