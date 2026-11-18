@@ -1157,15 +1157,39 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
   };
 
   const getFilteredAndSortedDocs = (docs: any[]) => {
+    if (!docs || !Array.isArray(docs)) return [];
     const sorted = sortDocuments(docs);
     if (!searchQuery) return sorted;
     const q = searchQuery.toLowerCase().trim();
-    return sorted.filter(doc =>
-      (doc.docName && doc.docName.toLowerCase().includes(q)) ||
-      (doc.docNumber && doc.docNumber.toLowerCase().includes(q)) ||
-      (doc.location && doc.location.toLowerCase().includes(q)) ||
-      (doc.preparerName && doc.preparerName.toLowerCase().includes(q))
-    );
+    // Support typing NFDL instead of NFDCL (common company abbreviation typo)
+    const qAlt = q.replace(/nfdl/g, 'nfdcl');
+    const qAlt2 = q.replace(/nfdcl/g, 'nfdl');
+    const qClean = q.replace(/[\s\-_/\\.]/g, '');
+    const qCleanAlt = qAlt.replace(/[\s\-_/\\.]/g, '');
+
+    return sorted.filter(doc => {
+      const docName = (doc.docName || '').toLowerCase();
+      const docNum = (doc.docNumber || '').toLowerCase();
+      const docNumClean = docNum.replace(/[\s\-_/\\.]/g, '');
+      const location = (doc.location || '').toLowerCase();
+      const preparer = (doc.preparerName || '').toLowerCase();
+      const status = (doc.status || '').toLowerCase();
+      const depts = (doc.departments || []).map((d: any) => (d.name || '').toLowerCase()).join(' ');
+
+      return (
+        docName.includes(q) ||
+        docName.includes(qAlt) ||
+        docNum.includes(q) ||
+        docNum.includes(qAlt) ||
+        docNum.includes(qAlt2) ||
+        (qClean.length > 0 && docNumClean.includes(qClean)) ||
+        (qCleanAlt.length > 0 && docNumClean.includes(qCleanAlt)) ||
+        location.includes(q) ||
+        preparer.includes(q) ||
+        status.includes(q) ||
+        depts.includes(q)
+      );
+    });
   };
 
   const filterUsers = (usersList: any[]) => {
@@ -1573,12 +1597,12 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
 
                   <Tabs defaultValue="all" className="w-full">
                     <TabsList className="grid w-full grid-cols-6">
-                      <TabsTrigger value="all">All ({documentsData?.documents.length || 0})</TabsTrigger>
-                      <TabsTrigger value="pending">Pending ({pendingDocs.length})</TabsTrigger>
-                      <TabsTrigger value="approved">Approved ({approvedDocs.length})</TabsTrigger>
-                      <TabsTrigger value="issued">Issued ({issuedDocs.length})</TabsTrigger>
-                      <TabsTrigger value="declined">Declined ({declinedDocs.length})</TabsTrigger>
-                      <TabsTrigger value="obsolete">Obsolete ({obsoleteDocs.length})</TabsTrigger>
+                      <TabsTrigger value="all">All ({searchQuery ? getFilteredAndSortedDocs(documentsData?.documents || []).length : (documentsData?.documents?.length || 0)})</TabsTrigger>
+                      <TabsTrigger value="pending">Pending ({searchQuery ? getFilteredAndSortedDocs(pendingDocs).length : pendingDocs.length})</TabsTrigger>
+                      <TabsTrigger value="approved">Approved ({searchQuery ? getFilteredAndSortedDocs(approvedDocs).length : approvedDocs.length})</TabsTrigger>
+                      <TabsTrigger value="issued">Issued ({searchQuery ? getFilteredAndSortedDocs(issuedDocs).length : issuedDocs.length})</TabsTrigger>
+                      <TabsTrigger value="declined">Declined ({searchQuery ? getFilteredAndSortedDocs(declinedDocs).length : declinedDocs.length})</TabsTrigger>
+                      <TabsTrigger value="obsolete">Obsolete ({searchQuery ? getFilteredAndSortedDocs(obsoleteDocs).length : obsoleteDocs.length})</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="all" className="mt-6">
@@ -1608,7 +1632,22 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                               </tr>
                             </thead>
                             <tbody>
-                              {getFilteredAndSortedDocs(documentsData.documents).map((doc, index) => (
+                              {(() => {
+                                const docs = getFilteredAndSortedDocs(documentsData.documents);
+                                if (docs.length === 0) {
+                                  return (
+                                    <tr>
+                                      <td colSpan={8} className="text-center py-8 text-slate-500">
+                                        <p className="text-sm font-semibold text-slate-700">No documents found matching "{searchQuery}"</p>
+                                        <p className="text-xs text-slate-400 mt-1">Check for typos (e.g. NFDCL instead of NFDL) or try clearing the search filter.</p>
+                                        <Button size="sm" variant="outline" className="mt-2 h-7 text-xs" onClick={() => setSearchQuery("")}>
+                                          Clear Search
+                                        </Button>
+                                      </td>
+                                    </tr>
+                                  );
+                                }
+                                return docs.map((doc, index) => (
                                 <tr
                                   key={`doc-${doc.id || index}`}
                                   className="border-b border-slate-200 hover:bg-slate-50 even:bg-slate-50/50 transition-colors"
@@ -1672,7 +1711,8 @@ export default function AdminDashboard({ onLogout, userId = "admin-1", adminName
                                     </div>
                                   </td>
                                 </tr>
-                              ))}
+                              ));
+                              })()}
                             </tbody>
                           </table>
                         </div>

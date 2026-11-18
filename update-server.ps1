@@ -1,4 +1,4 @@
-﻿Write-Host "====================================================" -ForegroundColor Cyan
+Write-Host "====================================================" -ForegroundColor Cyan
 Write-Host "             DMS Software Auto-Update               " -ForegroundColor Cyan
 Write-Host "====================================================" -ForegroundColor Cyan
 
