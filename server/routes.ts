@@ -19,6 +19,23 @@ const __dirname = path.dirname(__filename);
 
 const execAsync = promisify(execCallback);
 
+/**
+ * Converts a document title/number to a safe ASCII-only filename segment.
+ * Strips ALL non-ASCII characters (Unicode, Devanagari, curly quotes, etc.)
+ * to prevent Node.js HTTP header validation errors with Content-Disposition.
+ */
+function toAsciiFilename(str: string): string {
+  return (str || '')
+    .replace(/\u2018|\u2019|\u201A|\u201B/g, "'")   // curly single quotes → '
+    .replace(/\u201C|\u201D|\u201E|\u201F/g, '')    // curly double quotes → remove
+    .replace(/\u2013|\u2014/g, '-')                  // en/em dash → -
+    .replace(/[^\x20-\x7E]/g, '')                   // remove ALL remaining non-printable / non-ASCII
+    .replace(/[/\\?%*:|"<>\r\n\t]/g, '-')           // remove HTTP-header / filesystem unsafe chars
+    .replace(/-{2,}/g, '-')                          // collapse multiple dashes
+    .trim()
+    || 'document';
+}
+
 // In-memory PDF cache: key = docId_revisionNo, value = { pdfPath, expiresAt }
 const pdfCache = new Map<string, { pdfPath: string; expiresAt: number }>();
 
@@ -1334,10 +1351,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       try {
         await fsPromises.access(fullPath);
-        const fileName = path.basename(fullPath);
+        const rawFileName = path.basename(fullPath, path.extname(fullPath));
+        const safeFileName = toAsciiFilename(rawFileName) + '.docx';
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        res.attachment(fileName);
+        res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
 
         const fileBuffer = await fsPromises.readFile(fullPath);
         res.send(fileBuffer);
@@ -1578,8 +1596,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.setHeader('Content-Type', 'application/pdf');
 
         if (download === 'true') {
-          const fileName = `${document.docNumber}_${document.docName}_PREVIEW.pdf`.replace(/[\r\n]/g, '').replace(/[/\\?%*:|"<>]/g, '-');
-          res.attachment(fileName);
+          const safeNum = toAsciiFilename(document.docNumber || 'doc');
+          const safeName = toAsciiFilename(document.docName || '');
+          const fileName = `${safeNum}_${safeName}_PREVIEW.pdf`;
+          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
         } else {
           res.setHeader('Content-Disposition', 'inline; filename="document-preview.pdf"');
         }
@@ -1751,8 +1771,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.setHeader('Content-Type', 'application/pdf');
 
         if (download === 'true') {
-          const fileName = `${document.docNumber}_${document.docName}_v${document.revisionNo}.pdf`.replace(/[\r\n]/g, '').replace(/[/\\?%*:|"<>]/g, '-');
-          res.attachment(fileName);
+          const safeNum = toAsciiFilename(document.docNumber || 'doc');
+          const safeName = toAsciiFilename(document.docName || '');
+          const fileName = `${safeNum}_${safeName}_v${document.revisionNo}.pdf`;
+          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
         } else {
           res.setHeader('Content-Disposition', 'inline; filename="document.pdf"');
         }
@@ -1965,12 +1987,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       debugLog(`[Download - ${REQUEST_ID}]Success! Sending ${pdfBuffer.length} bytes`);
 
-      const safeDocNumber = (document.docNumber || "document").trim().replace(/[\r\n]/g, '').replace(/[/\\?%*:|"<>]/g, '-');
-      const safeDocName = (document.docName || "").trim().replace(/[\r\n]/g, '').replace(/[/\\?%*:|"<>]/g, '-');
+      const safeDocNumber = toAsciiFilename(document.docNumber || 'document');
+      const safeDocName = toAsciiFilename(document.docName || '');
       const fileName = `${safeDocNumber}_${safeDocName}_v${document.revisionNo}.pdf`;
 
       res.setHeader('Content-Type', 'application/pdf');
-      res.attachment(fileName);
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
       res.setHeader('Content-Length', pdfBuffer.length.toString());
       res.setHeader('Cache-Control', 'no-cache');
       res.send(pdfBuffer);
